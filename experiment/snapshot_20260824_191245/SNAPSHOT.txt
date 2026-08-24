@@ -1,0 +1,7 @@
+snapshot: /home/zjut/public/zjm/RAT-CFSR/experiment/snapshot_20260824_191245
+created_at: 2026-08-24T19:12:45
+code_source: git_head: e0b4e47; dirty: True
+results_source: /home/zjut/public/zjm/RAT-CFSR/outputs/rat_cfsr
+contents:
+- code/: current project code excluding data, logs, outputs, experiments, and git metadata
+- outputs/rat_cfsr/: current experiment results
