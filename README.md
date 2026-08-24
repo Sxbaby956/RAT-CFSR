@@ -1,68 +1,53 @@
 # RAT-CFSR
 
-RAT-CFSR 是面向 5G NR、LTE 和 IEEE 802.11a Wi-Fi 的开放集无线体制识别实现。项目融合：
+RAT-CFSR 是面向 RML2016.10a 的开放集无线调制识别实现。项目融合：
 
 - S3R 的 STFT、多膨胀率时频纹理编码；
 - CFSR 的类投影空间、类自编码器和重构拒识；
-- 新增的双视图门控融合、重构排序损失和类别条件误差校准。
+- 双视图门控融合、重构排序损失和类别条件误差校准。
 
 ## 数据划分
 
-默认使用 `GlobecomPOWDER/`：
+使用 `RML2016.10a_dict.pkl`（11 种调制 × 20 个 SNR(-20~18dB)，每个 (调制, SNR) 有 1000 个 (2,128) 复 IQ 样本）。
 
-- 训练：Day 1，set 1–4，仅已知体制；
-- 校准：Day 1，set 5，仅已知体制；
-- 测试：Day 2，set 1–5，已知和未知体制；
-- 同一录音切出的窗口不会跨集合。
+- 训练 / 校准 / 测试：在每个 (调制, SNR) 组合内部按 60% / 20% / 20% 随机划分，三个集合都覆盖全部 SNR。
+- 每次运行选择一个调制类型作为 unknown，其余 10 个作为 known；unknown 调制只进入测试集。
 
-每次运行选择一个未知体制，其余两个作为已知体制：
-
-```powershell
-python -m rat_cfsr.train --unknown 5G
-python -m rat_cfsr.train --unknown 4G
-python -m rat_cfsr.train --unknown WiFi
+```bash
+python -m rat_cfsr.train --unknown WBFM
+python -m rat_cfsr.train --unknown QPSK
 ```
 
 ## 环境
 
-建议 Python 3.10–3.12。安装与检查：
+使用 CUDA conda 环境（`RAT-CFSR` 或 `torchsig`）：
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -e ".[test]"
-python -m rat_cfsr.inspect_data --data-root GlobecomPOWDER
+```bash
+conda activate RAT-CFSR
+python -m rat_cfsr.inspect_data --data-root /home/zjut/public/zjm/RML2016.10a
 pytest
 ```
 
-如需 GPU，请按本机 CUDA 版本安装 PyTorch，再执行 `pip install -e ".[test]"`。
+## 完整训练（开放集矩阵）
 
-## 快速验证
+一次跑完 11 个 unknown 调制 × 3 个 seed（共 33 个实验）：
 
-只构建数据和模型、执行一次前向传播：
-
-```powershell
-python -m rat_cfsr.train `
-  --data-root GlobecomPOWDER `
-  --unknown 5G `
-  --max-windows-per-recording 4 `
-  --batch-size 4 `
-  --num-iq-samples 2048 `
-  --n-fft 128 `
-  --hop-length 64 `
-  --dry-run
+```bash
+nohup env CUDA_VISIBLE_DEVICES=1 python main.py \
+  --data-root /home/zjut/public/zjm/RML2016.10a \
+  --output-dir outputs/rml2016 \
+  --batch-size 64 --stage1-epochs 10 --stage2-epochs 20 \
+  --modality-dropout 0.3 --open-set-score energy \
+  > logs/2016-v1.log 2>&1 &
 ```
 
-## 完整训练
+也可以只跑单个实验：
 
-```powershell
-python -m rat_cfsr.train `
-  --data-root GlobecomPOWDER `
-  --output-dir outputs\unknown_5g_seed42 `
-  --unknown 5G `
-  --stage1-epochs 10 `
-  --stage2-epochs 20 `
-  --seed 42
+```bash
+python -m rat_cfsr.train \
+  --data-root /home/zjut/public/zjm/RML2016.10a \
+  --output-dir outputs/unknown_WBFM_seed42 \
+  --unknown WBFM --seed 42
 ```
 
 输出目录包含：
@@ -72,10 +57,8 @@ python -m rat_cfsr.train `
 - `metrics.json`：AUROC、AUPR、OSCR、TKR、TUR 等；
 - `history.json`：两阶段训练曲线；
 - `test_predictions.npz`：测试标签、分数和重构误差；
-- `split_summary.json`：录音及窗口划分统计。
+- `split_summary.json`：样本划分统计。
 
 ## 重要说明
 
-POWDER 中 Wi-Fi 原始采样率为 5 MS/s，LTE/5G NR 为 7.69 MS/s。数据集按照相同真实时间截窗，并把每个窗口重采样到相同输入长度，防止模型直接利用原始采样率或张量长度判断类别。
-
-`S3R/` 保留官方源码用于方法追溯，不是新训练入口。新实现入口统一为 `rat_cfsr.train`。
+RML2016.10a 样本已统一为 (2,128)，无需重采样；STFT 分支使用 `n_fft=64`、`hop_length=32`（128 点信号得到 3 帧时频图）。`S3R/` 保留官方源码用于方法追溯，不是新训练入口，新实现入口统一为 `rat_cfsr.train`。

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# RAT-CFSR formal experiment launcher.
+# RAT-CFSR formal experiment launcher (RML2016.10a modulation recognition).
 #
-# Runs the 3-unknown x 3-seed matrix (9 trainings) with two concurrent jobs,
+# Runs the 11-unknown x 3-seed matrix (33 trainings) with two concurrent jobs,
 # one per GPU (CUDA_VISIBLE_DEVICES 0 / 1). Each job is started under nohup
 # with its own persistent log under logs/; a master log records start/finish.
 #
@@ -13,8 +13,8 @@ cd "$(dirname "$0")"
 
 # CUDA-capable interpreter for this project.
 PY=${PY:-/home/zjut/miniconda3/envs/RAT-CFSR/bin/python}
-UNKNOWNS=(5G 4G WiFi)
-SEEDS=(42 123 2026)
+UNKNOWNS=(8PSK AM-DSB AM-SSB BPSK CPFSK GFSK PAM4 QAM16 QAM64 QPSK WBFM)
+SEEDS=(42)
 GPUS=(0 1)
 WORKERS=${WORKERS:-8}
 DRY=0
@@ -31,22 +31,24 @@ log() {
 
 launch_one() {
     local unknown="$1" seed="$2" gpu="$3"
-    local out="outputs/unknown_${unknown}_seed${seed}"
+    local out="outputs/rml2016/unknown_${unknown}_seed${seed}"
     local logfile="logs/train_${unknown}_seed${seed}.log"
     local cmd=(
         env CUDA_VISIBLE_DEVICES="$gpu" "$PY" -m rat_cfsr.train
-        --data-root GlobecomPOWDER
+        --data-root /home/zjut/public/zjm/RML2016.10a
         --output-dir "$out"
         --unknown "$unknown"
-        --window-ms 1.0
-        --num-iq-samples 8192
-        --max-windows-per-recording 256
+        --num-iq-samples 128
+        --n-fft 64
+        --hop-length 32
         --batch-size 64
-        --stage1-epochs 10
-        --stage2-epochs 20
-        --modality-dropout 0.3
-        --open-set-score energy
-        --energy-temperature 1.0
+        --stage1-epochs 30
+        --stage2-epochs 40
+        --early-stop-metric val_acc
+        --modality-dropout 0.1
+        --margin-weight 0.2
+        --threshold-quantile 0.90
+        --open-set-score prototype
         --log-interval 20
         --seed "$seed"
         --workers "$WORKERS"
@@ -85,8 +87,8 @@ for p in "${pids[@]}"; do
     wait "$p" || log "WARN: job pid=$p exited non-zero"
 done
 
-# Render the 3-unknown x 3-seed confusion-matrix grid once all runs finish.
+# Render the N-unknown x 3-seed confusion-matrix grid once all runs finish.
 log "Rendering confusion matrix grid"
-"$PY" -m rat_cfsr.plot_grid --output-root outputs
+"$PY" -m rat_cfsr.plot_grid --output-root outputs/rml2016
 
 log "ALL_EXPERIMENTS_DONE"

@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import json
 import math
-import re
+import pickle
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -12,144 +11,113 @@ import torch
 from torch.utils.data import Dataset
 
 
-PROTOCOLS = ("4G", "5G", "WiFi")
-FILENAME_RE = re.compile(
-    r"^(?P<protocol>4G|5G|WiFi)_Day_(?P<day>[12])_"
-    r"(?P<transmitter>[A-Za-z0-9-]+)_s(?P<set>[1-5])$"
+# The 11 modulation types present in RML2016.10a.
+MODULATIONS = (
+    "8PSK",
+    "AM-DSB",
+    "AM-SSB",
+    "BPSK",
+    "CPFSK",
+    "GFSK",
+    "PAM4",
+    "QAM16",
+    "QAM64",
+    "QPSK",
+    "WBFM",
 )
 
+# SNR levels in RML2016.10a, in dB, from -20 to 18 in 2 dB steps.
+SNRS = tuple(range(-20, 20, 2))
 
-@dataclass(frozen=True)
-class Recording:
-    recording_id: str
-    protocol: str
-    day: int
-    transmitter: str
-    set_index: int
-    sample_rate: float
-    sample_count: int
-    center_frequency: float
-    bin_path: Path
-    metadata_path: Path
+# Every RML2016.10a sample is fixed-length: 2 channels (I/Q) x 128 samples.
+NUM_IQ_SAMPLES = 128
 
 
 @dataclass(frozen=True)
-class WindowRecord:
-    recording: Recording
-    start: int
-    length: int
+class Sample:
+    """One labelled RML2016.10a IQ example.
+
+    ``index`` is the row index into the in-memory data array. ``label`` is the
+    index into the known-class label map, or ``-1`` for a modulation held out
+    as unknown.
+    """
+
+    modulation: str
+    snr: int
+    index: int
     label: int
 
 
-def _as_mapping(value: object) -> dict:
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, list) and value and isinstance(value[0], dict):
-        return value[0]
-    return {}
-
-
-def _canonical_protocol(stem_protocol: str, metadata_protocol: str | None) -> str:
-    if stem_protocol == "WiFi":
-        if metadata_protocol not in {None, "802.11a", "WiFi"}:
-            raise ValueError(f"Unexpected Wi-Fi metadata protocol: {metadata_protocol}")
-        return "WiFi"
-    if stem_protocol == "5G":
-        if metadata_protocol not in {None, "5G", "5G NR"}:
-            raise ValueError(
-                f"Filename protocol {stem_protocol} disagrees with metadata {metadata_protocol}"
-            )
-        return "5G"
-    if metadata_protocol not in {None, stem_protocol}:
-        raise ValueError(
-            f"Filename protocol {stem_protocol} disagrees with metadata {metadata_protocol}"
-        )
-    return stem_protocol
-
-
-def discover_recordings(root: str | Path) -> list[Recording]:
-    """Discover and validate POWDER recordings without loading their IQ samples."""
+def _find_pkl(root: str | Path) -> Path:
     root = Path(root).expanduser().resolve()
     if not root.is_dir():
-        raise FileNotFoundError(f"POWDER data directory not found: {root}")
-
-    recordings: list[Recording] = []
-    for metadata_path in sorted(root.glob("*.json")):
-        match = FILENAME_RE.match(metadata_path.stem)
-        if match is None:
-            continue
-        bin_path = metadata_path.with_suffix(".bin")
-        if not bin_path.is_file():
-            raise FileNotFoundError(f"Missing IQ binary for {metadata_path.name}")
-
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        global_meta = _as_mapping(metadata.get("global"))
-        capture_meta = _as_mapping(metadata.get("captures"))
-        annotation_meta = _as_mapping(metadata.get("annotations"))
-
-        datatype = str(global_meta.get("core:datatype", ""))
-        if datatype.lower() != "cf32":
-            raise ValueError(f"Unsupported datatype {datatype!r} in {metadata_path.name}")
-
-        protocol = _canonical_protocol(
-            match.group("protocol"), annotation_meta.get("core:protocol")
-        )
-        sample_rate = float(global_meta["core:sample_rate"])
-        file_sample_count = bin_path.stat().st_size // np.dtype("<c8").itemsize
-        annotated_count = int(annotation_meta.get("core:sample_count", file_sample_count))
-        sample_count = min(file_sample_count, annotated_count)
-        if sample_count <= 0:
-            raise ValueError(f"Empty recording: {bin_path}")
-
-        transmitter_meta = _as_mapping(annotation_meta.get("transmitter"))
-        transmitter = str(
-            transmitter_meta.get("core:location", match.group("transmitter"))
-        )
-        expected_transmitter = match.group("transmitter")
-        if transmitter.lower() != expected_transmitter.lower():
-            raise ValueError(
-                f"Transmitter mismatch in {metadata_path.name}: "
-                f"{transmitter} != {expected_transmitter}"
-            )
-
-        day = int(capture_meta.get("core:day", match.group("day")))
-        set_index = int(capture_meta.get("core:set", match.group("set")))
-        recordings.append(
-            Recording(
-                recording_id=metadata_path.stem,
-                protocol=protocol,
-                day=day,
-                transmitter=transmitter.lower(),
-                set_index=set_index,
-                sample_rate=sample_rate,
-                sample_count=sample_count,
-                center_frequency=float(capture_meta.get("core:center_frequency", 0.0)),
-                bin_path=bin_path.resolve(),
-                metadata_path=metadata_path.resolve(),
-            )
-        )
-
-    if not recordings:
-        raise FileNotFoundError(f"No POWDER metadata files found in {root}")
-    return recordings
+        raise FileNotFoundError(f"RML2016.10a data directory not found: {root}")
+    candidates = sorted(root.glob("*.pkl"))
+    if not candidates:
+        raise FileNotFoundError(f"No .pkl dataset found in {root}")
+    return candidates[0]
 
 
-def split_recordings(
-    recordings: Sequence[Recording],
-    known_protocols: Sequence[str],
+def load_samples(
+    root: str | Path,
+    label_map: dict[str, int],
+) -> tuple[np.ndarray, list[Sample]]:
+    """Load the RML2016.10a pickle into a single in-memory array.
+
+    The array is stacked in a deterministic order (modulation, then SNR, then
+    the original sample index) so that ``Sample.index`` is monotonic within each
+    ``(modulation, snr)`` group.
+    """
+    pkl_path = _find_pkl(root)
+    with open(pkl_path, "rb") as handle:
+        raw = pickle.load(handle, encoding="latin1")
+
+    arrays: list[np.ndarray] = []
+    samples: list[Sample] = []
+    for modulation in MODULATIONS:
+        for snr in SNRS:
+            key = (modulation, snr)
+            if key not in raw:
+                raise KeyError(f"Missing modulation/SNR key {key} in {pkl_path.name}")
+            block = np.asarray(raw[key], dtype=np.float32)
+            if block.ndim != 3 or block.shape[1:] != (2, NUM_IQ_SAMPLES):
+                raise ValueError(
+                    f"Unexpected sample shape {block.shape} for {key}; "
+                    f"expected (N, 2, {NUM_IQ_SAMPLES})"
+                )
+            label = label_map.get(modulation, -1)
+            for local_index in range(block.shape[0]):
+                samples.append(
+                    Sample(
+                        modulation=modulation,
+                        snr=snr,
+                        index=len(arrays),
+                        label=label,
+                    )
+                )
+                arrays.append(block[local_index])
+
+    data = np.stack(arrays, axis=0).astype(np.float32, copy=False)
+    return data, samples
+
+
+def split_samples(
+    samples: Sequence[Sample],
+    known_modulations: Sequence[str],
     seed: int = 42,
     train_fraction: float = 0.6,
     calibration_fraction: float = 0.2,
-) -> dict[str, list[Recording]]:
-    """Split each protocol/day group into train/calibration/test recordings.
+) -> dict[str, list[Sample]]:
+    """Split each ``(modulation, snr)`` group into train/calibration/test.
 
-    Each protocol is split independently inside each collection day, so Day 1
-    and Day 2 are represented evenly in every split. Unknown protocols are kept
-    out of train/calibration and only their test fraction is used.
+    Every group (1000 samples in RML2016.10a) is shuffled and split
+    independently, so all SNR levels appear in every split. Known modulations
+    contribute to train/calibration/test; an unknown modulation only contributes
+    its test fraction, mirroring the open-set protocol-recognition split.
     """
-    known = set(known_protocols)
-    if not known or not known.issubset(PROTOCOLS):
-        raise ValueError(f"Invalid known protocol set: {sorted(known)}")
+    known = set(known_modulations)
+    if not known or not known.issubset(MODULATIONS):
+        raise ValueError(f"Invalid known modulation set: {sorted(known)}")
     if not 0.0 < train_fraction < 1.0:
         raise ValueError("train_fraction must be in (0, 1)")
     if not 0.0 < calibration_fraction < 1.0:
@@ -157,14 +125,14 @@ def split_recordings(
     if train_fraction + calibration_fraction >= 1.0:
         raise ValueError("train_fraction + calibration_fraction must be < 1")
 
-    splits = {"train": [], "calibration": [], "test": []}
-    grouped: dict[tuple[str, int], list[Recording]] = {}
-    for recording in recordings:
-        grouped.setdefault((recording.protocol, recording.day), []).append(recording)
+    splits: dict[str, list[Sample]] = {"train": [], "calibration": [], "test": []}
+    grouped: dict[tuple[str, int], list[Sample]] = {}
+    for sample in samples:
+        grouped.setdefault((sample.modulation, sample.snr), []).append(sample)
 
     rng = np.random.default_rng(seed)
-    for (protocol, _day), values in sorted(grouped.items()):
-        ordered = sorted(values, key=lambda item: item.recording_id)
+    for (modulation, _snr), values in sorted(grouped.items()):
+        ordered = sorted(values, key=lambda item: item.index)
         permutation = rng.permutation(len(ordered))
         shuffled = [ordered[index] for index in permutation]
         train_count = int(round(len(shuffled) * train_fraction))
@@ -177,7 +145,7 @@ def split_recordings(
         calibration_values = shuffled[train_count : train_count + calibration_count]
         test_values = shuffled[train_count + calibration_count :]
 
-        if protocol in known:
+        if modulation in known:
             splits["train"].extend(train_values)
             splits["calibration"].extend(calibration_values)
         splits["test"].extend(test_values)
@@ -185,162 +153,111 @@ def split_recordings(
     for split_name, values in splits.items():
         if not values:
             raise ValueError(f"Split {split_name!r} is empty")
-        splits[split_name] = sorted(values, key=lambda item: item.recording_id)
+        splits[split_name] = sorted(values, key=lambda item: item.index)
     return splits
 
 
-def _window_starts(
-    sample_count: int,
-    window_length: int,
-    stride_length: int,
-    max_windows: int | None,
-) -> np.ndarray:
-    if sample_count < window_length:
-        return np.empty(0, dtype=np.int64)
-    starts = np.arange(0, sample_count - window_length + 1, stride_length, dtype=np.int64)
-    if max_windows is not None and max_windows > 0 and starts.size > max_windows:
-        indices = np.linspace(0, starts.size - 1, max_windows, dtype=np.int64)
-        starts = starts[indices]
-    return np.unique(starts)
+def filter_samples_by_snr(
+    samples: Sequence[Sample],
+    min_snr: int | None = None,
+    max_snr: int | None = None,
+) -> list[Sample]:
+    """Keep samples whose SNR falls within the optional inclusive range."""
+    if min_snr is not None and min_snr not in SNRS:
+        raise ValueError(f"min_snr must be one of {SNRS}; got {min_snr}")
+    if max_snr is not None and max_snr not in SNRS:
+        raise ValueError(f"max_snr must be one of {SNRS}; got {max_snr}")
+    if min_snr is not None and max_snr is not None and min_snr > max_snr:
+        raise ValueError("min_snr cannot exceed max_snr")
+    return [
+        sample
+        for sample in samples
+        if (min_snr is None or sample.snr >= min_snr)
+        and (max_snr is None or sample.snr <= max_snr)
+    ]
 
 
-def build_windows(
-    recordings: Iterable[Recording],
-    label_map: dict[str, int],
-    window_ms: float,
-    stride_fraction: float = 1.0,
-    max_windows_per_recording: int | None = 256,
-) -> list[WindowRecord]:
-    if window_ms <= 0:
-        raise ValueError("window_ms must be positive")
-    if not 0 < stride_fraction <= 1:
-        raise ValueError("stride_fraction must be in (0, 1]")
-
-    windows: list[WindowRecord] = []
-    duration_s = window_ms / 1000.0
-    for recording in recordings:
-        raw_length = max(2, int(round(recording.sample_rate * duration_s)))
-        stride = max(1, int(round(raw_length * stride_fraction)))
-        starts = _window_starts(
-            recording.sample_count,
-            raw_length,
-            stride,
-            max_windows_per_recording,
-        )
-        label = label_map.get(recording.protocol, -1)
-        windows.extend(
-            WindowRecord(recording=recording, start=int(start), length=raw_length, label=label)
-            for start in starts
-        )
-    if not windows:
-        raise ValueError("No windows could be generated with the requested duration")
-    return windows
-
-
-def _resample_complex_linear(iq: np.ndarray, target_length: int) -> np.ndarray:
-    if iq.size == target_length:
-        return np.asarray(iq, dtype=np.complex64)
-    source_axis = np.linspace(0.0, 1.0, iq.size, endpoint=False, dtype=np.float64)
-    target_axis = np.linspace(0.0, 1.0, target_length, endpoint=False, dtype=np.float64)
-    real = np.interp(target_axis, source_axis, iq.real)
-    imag = np.interp(target_axis, source_axis, iq.imag)
-    return (real + 1j * imag).astype(np.complex64, copy=False)
-
-
-class PowderWindowDataset(Dataset):
-    """Memory-mapped, fixed-duration POWDER windows.
-
-    Every source window represents the same physical duration. It is resampled to
-    ``target_samples`` so that the network cannot identify Wi-Fi from the original
-    5 MS/s versus LTE/NR at 7.69 MS/s tensor length.
-    """
+class ModulationDataset(Dataset):
+    """In-memory RML2016.10a windows with optional on-the-fly augmentation."""
 
     def __init__(
         self,
-        windows: Sequence[WindowRecord],
-        target_samples: int = 8192,
+        data: np.ndarray,
+        samples: Sequence[Sample],
         augment: bool = False,
         frequency_shift_max: float = 0.02,
         awgn_probability: float = 0.5,
         awgn_snr_db: tuple[float, float] = (15.0, 35.0),
     ) -> None:
-        if target_samples < 64:
-            raise ValueError("target_samples must be at least 64")
-        self.windows = list(windows)
-        self.target_samples = int(target_samples)
+        self.data = np.asarray(data, dtype=np.float32)
+        self.samples = list(samples)
         self.augment = bool(augment)
         self.frequency_shift_max = float(frequency_shift_max)
         self.awgn_probability = float(awgn_probability)
         self.awgn_snr_db = awgn_snr_db
-        self._memmaps: dict[Path, np.memmap] = {}
 
     def __len__(self) -> int:
-        return len(self.windows)
-
-    def __getstate__(self) -> dict:
-        state = self.__dict__.copy()
-        state["_memmaps"] = {}
-        return state
-
-    def _memmap(self, path: Path) -> np.memmap:
-        if path not in self._memmaps:
-            self._memmaps[path] = np.memmap(path, dtype="<c8", mode="r")
-        return self._memmaps[path]
+        return len(self.samples)
 
     @staticmethod
-    def _normalize(iq: np.ndarray) -> np.ndarray:
-        iq = iq - np.mean(iq)
-        rms = math.sqrt(float(np.mean(np.abs(iq) ** 2)))
-        return (iq / max(rms, 1e-8)).astype(np.complex64, copy=False)
+    def _to_complex(iq: np.ndarray) -> np.ndarray:
+        return iq[0].astype(np.float64) + 1j * iq[1].astype(np.float64)
 
-    def _augment(self, iq: np.ndarray) -> np.ndarray:
+    @staticmethod
+    def _from_complex(complex_iq: np.ndarray) -> np.ndarray:
+        return np.stack((complex_iq.real, complex_iq.imag), axis=0).astype(
+            np.float32, copy=False
+        )
+
+    @staticmethod
+    def _normalize(complex_iq: np.ndarray) -> np.ndarray:
+        complex_iq = complex_iq - np.mean(complex_iq)
+        rms = math.sqrt(float(np.mean(np.abs(complex_iq) ** 2)))
+        return complex_iq / max(rms, 1e-8)
+
+    def _augment(self, complex_iq: np.ndarray) -> np.ndarray:
         phase = np.random.uniform(-math.pi, math.pi)
-        iq = iq * np.exp(1j * phase)
+        complex_iq = complex_iq * np.exp(1j * phase)
 
         max_shift = self.frequency_shift_max
         if max_shift > 0:
             normalized_shift = np.random.uniform(-max_shift, max_shift)
-            sample_index = np.arange(iq.size, dtype=np.float32)
-            iq = iq * np.exp(2j * math.pi * normalized_shift * sample_index)
+            sample_index = np.arange(complex_iq.size, dtype=np.float32)
+            complex_iq = complex_iq * np.exp(2j * math.pi * normalized_shift * sample_index)
 
         if np.random.random() < self.awgn_probability:
             snr_db = np.random.uniform(*self.awgn_snr_db)
             noise_power = 10.0 ** (-snr_db / 10.0)
             noise = (
-                np.random.normal(size=iq.size) + 1j * np.random.normal(size=iq.size)
+                np.random.normal(size=complex_iq.size) + 1j * np.random.normal(size=complex_iq.size)
             ) * math.sqrt(noise_power / 2.0)
-            iq = iq + noise
-        return self._normalize(iq)
+            complex_iq = complex_iq + noise
+        return complex_iq
 
     def __getitem__(self, index: int) -> dict[str, object]:
-        window = self.windows[index]
-        source = self._memmap(window.recording.bin_path)
-        iq = np.asarray(source[window.start : window.start + window.length]).copy()
-        iq = self._normalize(iq)
-        iq = _resample_complex_linear(iq, self.target_samples)
-        iq = self._normalize(iq)
+        sample = self.samples[index]
+        complex_iq = self._to_complex(self.data[sample.index])
+        complex_iq = self._normalize(complex_iq)
         if self.augment:
-            iq = self._augment(iq)
+            complex_iq = self._augment(complex_iq)
+            complex_iq = self._normalize(complex_iq)
 
-        tensor = np.stack((iq.real, iq.imag), axis=0).astype(np.float32, copy=False)
+        tensor = torch.from_numpy(self._from_complex(complex_iq))
         return {
-            "iq": torch.from_numpy(tensor),
-            "label": torch.tensor(window.label, dtype=torch.long),
-            "protocol": window.recording.protocol,
-            "recording_id": window.recording.recording_id,
+            "iq": tensor,
+            "label": torch.tensor(sample.label, dtype=torch.long),
+            "modulation": sample.modulation,
+            "snr": sample.snr,
         }
 
 
-def summarize_recordings(recordings: Sequence[Recording]) -> dict[str, object]:
-    protocols = sorted({recording.protocol for recording in recordings})
+def summarize_samples(samples: Sequence[Sample]) -> dict[str, object]:
+    modulations = sorted({sample.modulation for sample in samples})
     return {
-        "recording_count": len(recordings),
-        "protocol_counts": {
-            protocol: sum(recording.protocol == protocol for recording in recordings)
-            for protocol in protocols
+        "sample_count": len(samples),
+        "modulation_counts": {
+            modulation: sum(sample.modulation == modulation for sample in samples)
+            for modulation in modulations
         },
-        "days": sorted({recording.day for recording in recordings}),
-        "transmitters": sorted({recording.transmitter for recording in recordings}),
-        "sample_rates": sorted({recording.sample_rate for recording in recordings}),
-        "total_complex_samples": int(sum(recording.sample_count for recording in recordings)),
+        "snrs": sorted({sample.snr for sample in samples}),
     }

@@ -13,12 +13,12 @@ from torch.utils.data import DataLoader
 
 from .calibration import ClassConditionalCalibrator, ClassConditionalScoreCalibrator
 from .data import (
-    PROTOCOLS,
-    PowderWindowDataset,
-    build_windows,
-    discover_recordings,
-    split_recordings,
-    summarize_recordings,
+    MODULATIONS,
+    ModulationDataset,
+    filter_samples_by_snr,
+    load_samples,
+    split_samples,
+    summarize_samples,
 )
 from .losses import RATCFSRLoss
 from .metrics import (
@@ -32,19 +32,34 @@ from .model import RATCFSR
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Train RAT-CFSR on the POWDER NR/LTE/Wi-Fi dataset."
+        description="Train RAT-CFSR on the RML2016.10a modulation dataset."
     )
-    parser.add_argument("--data-root", type=Path, default=Path("GlobecomPOWDER"))
-    parser.add_argument("--output-dir", type=Path, default=Path("outputs/rat_cfsr"))
-    parser.add_argument("--unknown", choices=PROTOCOLS, default="5G")
-    parser.add_argument("--window-ms", type=float, default=1.0)
-    parser.add_argument("--stride-fraction", type=float, default=1.0)
-    parser.add_argument("--num-iq-samples", type=int, default=8192)
-    parser.add_argument("--max-windows-per-recording", type=int, default=256)
+    parser.add_argument("--data-root", type=Path, default=Path("/home/zjut/public/zjm/RML2016.10a"))
+    parser.add_argument("--output-dir", type=Path, default=Path("outputs/rml2016"))
+    parser.add_argument(
+        "--unknown",
+        nargs="+",
+        choices=MODULATIONS,
+        default=["AM-DSB", "AM-SSB", "WBFM"],
+        help="Modulation type(s) held out as unknown (out-of-distribution).",
+    )
+    parser.add_argument("--num-iq-samples", type=int, default=128)
+    parser.add_argument(
+        "--min-snr",
+        type=int,
+        default=None,
+        help="Optional inclusive minimum SNR used before the train/cal/test split.",
+    )
+    parser.add_argument(
+        "--max-snr",
+        type=int,
+        default=None,
+        help="Optional inclusive maximum SNR used before the train/cal/test split.",
+    )
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--workers", type=int, default=0)
-    parser.add_argument("--stage1-epochs", type=int, default=10)
-    parser.add_argument("--stage2-epochs", type=int, default=20)
+    parser.add_argument("--stage1-epochs", type=int, default=30)
+    parser.add_argument("--stage2-epochs", type=int, default=40)
     parser.add_argument(
         "--early-stop-patience",
         type=int,
@@ -60,7 +75,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--early-stop-metric",
         choices=("val_loss", "val_acc"),
-        default="val_loss",
+        default="val_acc",
         help="Validation metric monitored by early stopping.",
     )
     parser.add_argument("--stage1-lr", type=float, default=3e-4)
@@ -70,18 +85,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--semantic-dim", type=int, default=128)
     parser.add_argument("--projection-dim", type=int, default=64)
     parser.add_argument("--bottleneck-dim", type=int, default=16)
-    parser.add_argument("--n-fft", type=int, default=256)
-    parser.add_argument("--hop-length", type=int, default=128)
+    parser.add_argument("--n-fft", type=int, default=64)
+    parser.add_argument("--hop-length", type=int, default=32)
     parser.add_argument("--modality-dropout", type=float, default=0.1)
     parser.add_argument("--ae-noise-std", type=float, default=0.01)
     parser.add_argument("--reconstruction-weight", type=float, default=1.0)
-    parser.add_argument("--margin-weight", type=float, default=0.5)
+    parser.add_argument("--margin-weight", type=float, default=0.2)
     parser.add_argument("--margin", type=float, default=0.2)
-    parser.add_argument("--threshold-quantile", type=float, default=0.95)
+    parser.add_argument("--threshold-quantile", type=float, default=0.90)
     parser.add_argument(
         "--open-set-score",
         choices=("energy", "max_softmax", "max_logit", "prototype", "reconstruction"),
-        default="energy",
+        default="prototype",
         help="Unknown score used for final rejection. Larger scores mean more unknown.",
     )
     parser.add_argument("--energy-temperature", type=float, default=1.0)
@@ -137,27 +152,20 @@ def select_device(requested: str) -> torch.device:
 
 
 def make_loaders(args: argparse.Namespace) -> tuple[dict[str, DataLoader], dict]:
-    recordings = discover_recordings(args.data_root)
-    known_protocols = [protocol for protocol in PROTOCOLS if protocol != args.unknown]
-    label_map = {protocol: index for index, protocol in enumerate(known_protocols)}
-    recording_splits = split_recordings(recordings, known_protocols, seed=args.seed)
+    unknown_modulations = list(args.unknown)
+    known_modulations = [m for m in MODULATIONS if m not in set(unknown_modulations)]
+    label_map = {m: index for index, m in enumerate(known_modulations)}
+    data, samples = load_samples(args.data_root, label_map)
+    samples = filter_samples_by_snr(samples, min_snr=args.min_snr, max_snr=args.max_snr)
+    sample_splits = split_samples(samples, known_modulations, seed=args.seed)
 
-    datasets: dict[str, PowderWindowDataset] = {}
-    window_counts = {}
-    for split_name, split_values in recording_splits.items():
-        windows = build_windows(
+    datasets: dict[str, ModulationDataset] = {}
+    for split_name, split_values in sample_splits.items():
+        datasets[split_name] = ModulationDataset(
+            data,
             split_values,
-            label_map=label_map,
-            window_ms=args.window_ms,
-            stride_fraction=args.stride_fraction,
-            max_windows_per_recording=args.max_windows_per_recording,
-        )
-        datasets[split_name] = PowderWindowDataset(
-            windows,
-            target_samples=args.num_iq_samples,
             augment=split_name == "train",
         )
-        window_counts[split_name] = len(windows)
 
     pin_memory = torch.cuda.is_available()
     loaders = {
@@ -185,10 +193,14 @@ def make_loaders(args: argparse.Namespace) -> tuple[dict[str, DataLoader], dict]
         ),
     }
     split_summary = {
-        "dataset": summarize_recordings(recordings),
-        "known_protocols": known_protocols,
-        "unknown_protocol": args.unknown,
-        "split_strategy": "protocol_day_stratified_random_60_20_20",
+        "dataset": summarize_samples(samples),
+        "known_modulations": known_modulations,
+        "unknown_modulations": unknown_modulations,
+        "split_strategy": "modulation_snr_stratified_random_60_20_20",
+        "snr_filter": {
+            "min_snr": args.min_snr,
+            "max_snr": args.max_snr,
+        },
         "split_seed": args.seed,
         "split_fractions": {
             "train": 0.6,
@@ -196,16 +208,22 @@ def make_loaders(args: argparse.Namespace) -> tuple[dict[str, DataLoader], dict]
             "test": 0.2,
         },
         "label_map": label_map,
-        "recording_counts": {
-            name: len(values) for name, values in recording_splits.items()
+        "sample_counts": {
+            name: len(values) for name, values in sample_splits.items()
         },
-        "window_counts": window_counts,
-        "split_protocol_counts": {
+        "split_modulation_counts": {
             name: {
-                protocol: sum(value.protocol == protocol for value in values)
-                for protocol in PROTOCOLS
+                modulation: sum(value.modulation == modulation for value in values)
+                for modulation in MODULATIONS
             }
-            for name, values in recording_splits.items()
+            for name, values in sample_splits.items()
+        },
+        "split_snr_counts": {
+            name: {
+                str(snr): sum(value.snr == snr for value in values)
+                for snr in sorted({value.snr for value in values})
+            }
+            for name, values in sample_splits.items()
         },
     }
     return loaders, split_summary
@@ -325,12 +343,14 @@ def closed_set_accuracy(
 @torch.no_grad()
 def collect_outputs(
     model: RATCFSR, loader: DataLoader, device: torch.device
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     model.eval()
     all_errors = []
     all_labels = []
     all_logits = []
     all_features = []
+    all_snrs = []
+    all_modulations = []
     for batch in loader:
         iq, labels = _move_batch(batch, device)
         outputs = model(iq)
@@ -338,11 +358,15 @@ def collect_outputs(
         all_labels.append(labels.cpu().numpy())
         all_logits.append(outputs["logits"].cpu().numpy())
         all_features.append(outputs["fused_semantic"].cpu().numpy())
+        all_snrs.append(np.asarray(batch["snr"], dtype=np.int64))
+        all_modulations.append(np.asarray(batch["modulation"], dtype=str))
     return (
         np.concatenate(all_errors),
         np.concatenate(all_labels),
         np.concatenate(all_logits),
         np.concatenate(all_features),
+        np.concatenate(all_snrs),
+        np.concatenate(all_modulations),
     )
 
 
@@ -454,8 +478,8 @@ def save_checkpoint(
 ) -> None:
     checkpoint = {
         "model_state": model.state_dict(),
-        "known_protocols": split_summary["known_protocols"],
-        "unknown_protocol": args.unknown,
+        "known_modulations": split_summary["known_modulations"],
+        "unknown_modulations": list(args.unknown),
         "model_config": {
             "num_classes": num_classes,
             "semantic_dim": args.semantic_dim,
@@ -487,6 +511,94 @@ def _is_improved(score: float, best_score: float, min_delta: float) -> bool:
     return score > best_score + min_delta
 
 
+def _subset_open_set_metrics(
+    true_labels: np.ndarray,
+    predicted_labels: np.ndarray,
+    candidate_labels: np.ndarray,
+    unknown_scores: np.ndarray,
+    mask: np.ndarray,
+) -> dict[str, float | int]:
+    count = int(np.sum(mask))
+    if count == 0:
+        return {"sample_count": 0}
+    metrics = evaluate_open_set(
+        true_labels=true_labels[mask],
+        predicted_labels=predicted_labels[mask],
+        candidate_labels=candidate_labels[mask],
+        unknown_scores=unknown_scores[mask],
+    )
+    metrics["sample_count"] = count
+    return metrics
+
+
+def grouped_open_set_metrics(
+    true_labels: np.ndarray,
+    predicted_labels: np.ndarray,
+    candidate_labels: np.ndarray,
+    unknown_scores: np.ndarray,
+    snrs: np.ndarray,
+    modulations: np.ndarray,
+    known_class_names: list[str],
+    unknown_modulations: list[str],
+) -> dict[str, object]:
+    snr_metrics = {
+        str(int(snr)): _subset_open_set_metrics(
+            true_labels,
+            predicted_labels,
+            candidate_labels,
+            unknown_scores,
+            snrs == snr,
+        )
+        for snr in sorted(np.unique(snrs))
+    }
+    high_snr_mask = snrs >= 0
+    metrics: dict[str, object] = {
+        "snr_metrics": snr_metrics,
+        "high_snr_metrics": _subset_open_set_metrics(
+            true_labels,
+            predicted_labels,
+            candidate_labels,
+            unknown_scores,
+            high_snr_mask,
+        ),
+        "unknown_modulation_metrics": {},
+        "known_modulation_accuracy": {},
+    }
+
+    for modulation in unknown_modulations:
+        unknown_mask = modulations == modulation
+        known_mask = true_labels >= 0
+        mask = known_mask | unknown_mask
+        subset = _subset_open_set_metrics(
+            true_labels,
+            predicted_labels,
+            candidate_labels,
+            unknown_scores,
+            mask,
+        )
+        subset["unknown_sample_count"] = int(np.sum(unknown_mask))
+        if np.any(unknown_mask):
+            subset["true_unknown_rate"] = float(np.mean(predicted_labels[unknown_mask] < 0))
+        metrics["unknown_modulation_metrics"][modulation] = subset
+
+    for class_index, modulation in enumerate(known_class_names):
+        mask = true_labels == class_index
+        count = int(np.sum(mask))
+        metrics["known_modulation_accuracy"][modulation] = {
+            "sample_count": count,
+            "accuracy": float(np.mean(candidate_labels[mask] == class_index))
+            if count
+            else 0.0,
+            "accepted_accuracy": float(np.mean(predicted_labels[mask] == class_index))
+            if count
+            else 0.0,
+            "false_reject_rate": float(np.mean(predicted_labels[mask] < 0))
+            if count
+            else 0.0,
+        }
+    return metrics
+
+
 def evaluate_model(
     args: argparse.Namespace,
     model: RATCFSR,
@@ -500,12 +612,19 @@ def evaluate_model(
         calibration_labels,
         calibration_logits,
         calibration_features,
+        _calibration_snrs,
+        _calibration_modulations,
     ) = collect_outputs(model, loaders["calibration"], device)
     print("[status] Fitting open-set calibrator")
     print("[status] Collecting test outputs")
-    test_errors, test_labels, test_logits, test_features = collect_outputs(
-        model, loaders["test"], device
-    )
+    (
+        test_errors,
+        test_labels,
+        test_logits,
+        test_features,
+        test_snrs,
+        test_modulations,
+    ) = collect_outputs(model, loaders["test"], device)
     calibrator, predictions, test_unknown_scores = calibrate_and_predict(
         args=args,
         calibration_errors=calibration_errors,
@@ -527,9 +646,21 @@ def evaluate_model(
         true_labels=test_labels,
         predicted_labels=predictions.labels,
         known_class_names=known_class_names,
-        unknown_name=f"unknown:{args.unknown}",
+        unknown_name="unknown:" + "+".join(args.unknown),
     )
     metrics["confusion_matrix"] = confusion
+    metrics.update(
+        grouped_open_set_metrics(
+            true_labels=test_labels,
+            predicted_labels=predictions.labels,
+            candidate_labels=predictions.candidate_labels,
+            unknown_scores=predictions.candidate_scores,
+            snrs=test_snrs,
+            modulations=test_modulations,
+            known_class_names=known_class_names,
+            unknown_modulations=list(args.unknown),
+        )
+    )
 
     calibrator.save(args.output_dir / "calibrator.json")
     _write_json(args.output_dir / "confusion_matrix.json", confusion)
@@ -539,7 +670,7 @@ def evaluate_model(
     save_confusion_matrix_image(
         confusion,
         args.output_dir / "confusion_matrix.png",
-        title=f"Open-set confusion matrix (unknown={args.unknown})",
+        title=f"Open-set confusion matrix (unknown={'+'.join(args.unknown)})",
     )
     _write_json(args.output_dir / "metrics.json", metrics)
     np.savez_compressed(
@@ -553,6 +684,8 @@ def evaluate_model(
         reconstruction_errors=test_errors,
         logits=test_logits,
         fused_features=test_features,
+        snrs=test_snrs,
+        modulations=test_modulations,
         open_set_score=np.asarray(args.open_set_score),
     )
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
@@ -627,7 +760,7 @@ def run_test_only(args: argparse.Namespace) -> dict[str, object]:
         model,
         loaders,
         device,
-        known_class_names=list(split_summary["known_protocols"]),
+        known_class_names=list(split_summary["known_modulations"]),
     )
     return {
         "split_summary": split_summary,
@@ -640,7 +773,7 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
     set_seed(args.seed)
     device = select_device(args.device)
     loaders, split_summary = make_loaders(args)
-    num_classes = len(split_summary["known_protocols"])
+    num_classes = len(split_summary["known_modulations"])
     model = make_model(args, num_classes).to(device)
     criterion = RATCFSRLoss(
         reconstruction_weight=args.reconstruction_weight,
@@ -652,7 +785,7 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
     print(f"device={device}; parameters={sum(p.numel() for p in model.parameters()):,}")
     print(
         "[status] "
-        f"unknown={args.unknown}; known={split_summary['known_protocols']}; "
+        f"unknown={list(args.unknown)}; known={split_summary['known_modulations']}; "
         f"open_set_score={args.open_set_score}; "
         f"threshold_quantile={args.threshold_quantile}"
     )
@@ -857,7 +990,7 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
             model,
             loaders,
             device,
-            known_class_names=list(split_summary["known_protocols"]),
+            known_class_names=list(split_summary["known_modulations"]),
         )
     else:
         print("[status] Train-only mode: skipped test evaluation")

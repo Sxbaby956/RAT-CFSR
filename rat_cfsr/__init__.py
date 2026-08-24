@@ -1,4 +1,4 @@
-"""RAT-CFSR: open-set wireless technology recognition."""
+"""RAT-CFSR: open-set wireless modulation recognition."""
 
 from .calibration import ClassConditionalCalibrator
 from .losses import RATCFSRLoss

@@ -4,28 +4,29 @@ import argparse
 import json
 from pathlib import Path
 
+from .data import MODULATIONS
 from .metrics import _draw_confusion_matrix
 
 # Fixed layout for the experiment matrix: rows are the held-out ("unknown")
-# protocol, columns are the random seed.
-UNKNOWN_ORDER = ("5G", "4G", "WiFi")
-SEED_ORDER = ("42", "123", "2026")
+# modulation, columns are the random seed.
+UNKNOWN_ORDER = MODULATIONS
+SEED_ORDER = ("42",)
 
 
 def parse_run_name(name: str) -> tuple[str, str] | None:
-    """Parse ``unknown_<protocol>_seed<seed>`` into ``(protocol, seed)``."""
+    """Parse ``unknown_<modulation>_seed<seed>`` into ``(modulation, seed)``."""
     if not name.startswith("unknown_") or "_seed" not in name:
         return None
-    protocol, seed = name[len("unknown_") :].split("_seed", 1)
-    if not protocol or not seed:
+    modulation, seed = name[len("unknown_") :].split("_seed", 1)
+    if not modulation or not seed:
         return None
-    return protocol, seed
+    return modulation, seed
 
 
 def discover_runs(output_root: Path) -> dict[tuple[str, str], Path]:
     """Map ``(unknown, seed)`` to each run's ``confusion_matrix.json``.
 
-    The unknown protocol and seed are read from ``config.json`` when present
+    The unknown modulation and seed are read from ``config.json`` when present
     (robust to arbitrary output-directory names), falling back to parsing the
     directory name.
     """
@@ -53,7 +54,7 @@ def plot_confusion_matrix_grid(
     title: str | None = None,
     dpi: int = 200,
 ) -> None:
-    """Render the 3-unknown x 3-seed confusion-matrix grid as one PNG."""
+    """Render the N-unknown x 3-seed confusion-matrix grid as one PNG."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -105,7 +106,7 @@ def plot_confusion_matrix_grid(
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Render the 3-unknown x 3-seed open-set confusion-matrix grid."
+        description="Render the N-unknown x 3-seed open-set confusion-matrix grid."
     )
     parser.add_argument(
         "--output-root",

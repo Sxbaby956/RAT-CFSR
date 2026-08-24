@@ -4,11 +4,11 @@ import copy
 import sys
 from pathlib import Path
 
-from rat_cfsr.data import PROTOCOLS
+from rat_cfsr.data import MODULATIONS
 from rat_cfsr.snapshot import copy_current_snapshot
 from rat_cfsr.train import build_arg_parser, run, run_test_only
 
-DEFAULT_SEEDS = (42, 123, 2026)
+DEFAULT_SEEDS = (42,)
 
 
 def parse_args():
@@ -34,7 +34,7 @@ def parse_args():
         type=int,
         nargs="+",
         default=list(DEFAULT_SEEDS),
-        help="Seeds used by the default 3-unknown experiment matrix.",
+        help="Seeds used by the default experiment matrix (one per unknown modulation).",
     )
     return parser.parse_args()
 
@@ -44,15 +44,21 @@ def run_matrix(args) -> None:
     Path(output_root).mkdir(parents=True, exist_ok=True)
     print(
         "[matrix] "
-        f"running {len(PROTOCOLS) * len(args.matrix_seeds)} experiment(s); "
+        f"running {len(MODULATIONS) * len(args.matrix_seeds)} experiment(s); "
         f"output_root={output_root}"
     )
-    for unknown in PROTOCOLS:
+    for unknown in MODULATIONS:
         for seed in args.matrix_seeds:
             run_args = copy.deepcopy(args)
-            run_args.unknown = unknown
+            run_args.unknown = [unknown]
             run_args.seed = int(seed)
             run_args.output_dir = Path(output_root) / f"unknown_{unknown}_seed{seed}"
+            if (run_args.output_dir / "metrics.json").is_file():
+                print(
+                    "[matrix] "
+                    f"skip unknown={unknown} seed={seed}; metrics.json already exists"
+                )
+                continue
             print(
                 "[matrix] "
                 f"start unknown={unknown} seed={seed} "
