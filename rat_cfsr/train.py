@@ -4,12 +4,18 @@ import argparse
 import copy
 import json
 import random
+import sys
 import time
 from pathlib import Path
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+
+try:
+    from tqdm.auto import tqdm
+except ImportError:  # pragma: no cover - exercised only in minimal environments.
+    tqdm = None
 
 from .calibration import ClassConditionalCalibrator, ClassConditionalScoreCalibrator
 from .data import (
@@ -70,7 +76,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--log-interval",
         type=int,
         default=20,
-        help="Print training status every N batches; 0 disables batch logs.",
+        help="Deprecated; progress bars now update every batch.",
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="auto", help="auto, cpu, cuda, or cuda:0")
@@ -211,13 +217,24 @@ def train_epoch(
     stage: int,
     epoch: int,
     total_epochs: int,
-    log_interval: int,
 ) -> dict[str, float]:
     model.train()
     totals: dict[str, float] = {}
     sample_count = 0
     total_batches = len(loader)
-    for batch_index, batch in enumerate(loader, start=1):
+    iterator = enumerate(loader, start=1)
+    progress = None
+    if tqdm is not None and sys.stderr.isatty():
+        progress = tqdm(
+            iterator,
+            total=total_batches,
+            desc=f"stage {stage} epoch {epoch}/{total_epochs}",
+            dynamic_ncols=True,
+            leave=False,
+        )
+        iterator = progress
+
+    for _batch_index, batch in iterator:
         iq, labels = _move_batch(batch, device)
         if torch.any(labels < 0):
             raise RuntimeError("Unknown samples must never enter the training loader")
@@ -231,22 +248,36 @@ def train_epoch(
         sample_count += batch_size
         for name, value in losses.items():
             totals[name] = totals.get(name, 0.0) + float(value.detach()) * batch_size
-        if log_interval > 0 and (
-            batch_index == 1
-            or batch_index == total_batches
-            or batch_index % log_interval == 0
-        ):
-            running = {
-                name: value / max(sample_count, 1) for name, value in totals.items()
-            }
-            print(
-                "[train] "
-                f"stage={stage} epoch={epoch}/{total_epochs} "
-                f"batch={batch_index}/{total_batches} "
-                f"samples={sample_count} "
-                f"total_loss={running.get('total', 0.0):.4f}"
-            )
-    return {name: value / max(sample_count, 1) for name, value in totals.items()}
+        if progress is not None:
+            progress.set_postfix(train_loss=totals["total"] / max(sample_count, 1))
+    losses = {name: value / max(sample_count, 1) for name, value in totals.items()}
+    losses["train_loss"] = losses["total"]
+    return losses
+
+
+@torch.no_grad()
+def evaluate_loss(
+    model: RATCFSR,
+    loader: DataLoader,
+    criterion: RATCFSRLoss,
+    device: torch.device,
+    classification_only: bool,
+) -> dict[str, float]:
+    model.eval()
+    totals: dict[str, float] = {}
+    sample_count = 0
+    for batch in loader:
+        iq, labels = _move_batch(batch, device)
+        if torch.any(labels < 0):
+            continue
+        losses = criterion(model(iq), labels, classification_only=classification_only)
+        batch_size = labels.size(0)
+        sample_count += batch_size
+        for name, value in losses.items():
+            totals[name] = totals.get(name, 0.0) + float(value.detach()) * batch_size
+    losses = {name: value / max(sample_count, 1) for name, value in totals.items()}
+    losses["val_loss"] = losses.get("total", 0.0)
+    return losses
 
 
 @torch.no_grad()
@@ -557,7 +588,6 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
     print("[status] Stage 1 start: closed-set classifier warmup")
     for epoch in range(1, args.stage1_epochs + 1):
         started = time.time()
-        print(f"[status] Stage 1 epoch {epoch}/{args.stage1_epochs}: training")
         train_losses = train_epoch(
             model,
             loaders["train"],
@@ -568,9 +598,14 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
             stage=1,
             epoch=epoch,
             total_epochs=args.stage1_epochs,
-            log_interval=args.log_interval,
         )
-        print(f"[status] Stage 1 epoch {epoch}/{args.stage1_epochs}: calibration eval")
+        val_losses = evaluate_loss(
+            model,
+            loaders["calibration"],
+            criterion,
+            device,
+            classification_only=True,
+        )
         calibration_accuracy, gate_mean = closed_set_accuracy(
             model, loaders["calibration"], device
         )
@@ -579,12 +614,23 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
             "stage": 1,
             "epoch": epoch,
             "train": train_losses,
+            "validation": val_losses,
+            "train_loss": train_losses["train_loss"],
+            "val_loss": val_losses["val_loss"],
             "calibration_accuracy": calibration_accuracy,
             "gate_mean": gate_mean,
             "seconds": time.time() - started,
         }
         history.append(row)
-        print(json.dumps(row, default=_json_ready))
+        print(
+            "[epoch] "
+            f"stage=1 epoch={epoch}/{args.stage1_epochs} "
+            f"train_loss={train_losses['train_loss']:.4f} "
+            f"val_loss={val_losses['val_loss']:.4f} "
+            f"val_acc={calibration_accuracy:.4f} "
+            f"gate={np.round(gate_mean, 4).tolist()} "
+            f"seconds={row['seconds']:.1f}"
+        )
         if calibration_accuracy > best_accuracy:
             best_accuracy = calibration_accuracy
             best_state = copy.deepcopy(model.state_dict())
@@ -615,7 +661,6 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
     print("[status] Stage 2 start: reconstruction/margin fine-tuning")
     for epoch in range(1, args.stage2_epochs + 1):
         started = time.time()
-        print(f"[status] Stage 2 epoch {epoch}/{args.stage2_epochs}: training")
         train_losses = train_epoch(
             model,
             loaders["train"],
@@ -626,9 +671,14 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
             stage=2,
             epoch=epoch,
             total_epochs=args.stage2_epochs,
-            log_interval=args.log_interval,
         )
-        print(f"[status] Stage 2 epoch {epoch}/{args.stage2_epochs}: calibration eval")
+        val_losses = evaluate_loss(
+            model,
+            loaders["calibration"],
+            criterion,
+            device,
+            classification_only=False,
+        )
         calibration_accuracy, gate_mean = closed_set_accuracy(
             model, loaders["calibration"], device
         )
@@ -637,12 +687,23 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
             "stage": 2,
             "epoch": epoch,
             "train": train_losses,
+            "validation": val_losses,
+            "train_loss": train_losses["train_loss"],
+            "val_loss": val_losses["val_loss"],
             "calibration_accuracy": calibration_accuracy,
             "gate_mean": gate_mean,
             "seconds": time.time() - started,
         }
         history.append(row)
-        print(json.dumps(row, default=_json_ready))
+        print(
+            "[epoch] "
+            f"stage=2 epoch={epoch}/{args.stage2_epochs} "
+            f"train_loss={train_losses['train_loss']:.4f} "
+            f"val_loss={val_losses['val_loss']:.4f} "
+            f"val_acc={calibration_accuracy:.4f} "
+            f"gate={np.round(gate_mean, 4).tolist()} "
+            f"seconds={row['seconds']:.1f}"
+        )
 
     save_checkpoint(args, model, split_summary, num_classes)
     _write_json(args.output_dir / "history.json", history)
