@@ -4,12 +4,18 @@ import argparse
 import copy
 import json
 import random
+import sys
 import time
 from pathlib import Path
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+
+try:
+    from tqdm.auto import tqdm
+except ImportError:  # pragma: no cover - exercised only in minimal environments.
+    tqdm = None
 
 from .calibration import ClassConditionalCalibrator, ClassConditionalScoreCalibrator
 from .data import (
@@ -70,7 +76,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--log-interval",
         type=int,
         default=20,
-        help="Print one training status line every N batches; 0 disables batch logs.",
+        help="Deprecated; use --progress to control batch progress display.",
+    )
+    parser.add_argument(
+        "--progress",
+        choices=("auto", "always", "never"),
+        default="always",
+        help="Progress bar mode.",
+    )
+    parser.add_argument(
+        "--progress-interval",
+        type=int,
+        default=20,
+        help="Refresh progress bar loss display every N batches.",
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="auto", help="auto, cpu, cuda, or cuda:0")
@@ -211,13 +229,31 @@ def train_epoch(
     stage: int,
     epoch: int,
     total_epochs: int,
-    log_interval: int,
+    progress_mode: str,
+    progress_interval: int,
 ) -> dict[str, float]:
     model.train()
     totals: dict[str, float] = {}
     sample_count = 0
     total_batches = len(loader)
-    for batch_index, batch in enumerate(loader, start=1):
+    iterator = enumerate(loader, start=1)
+    progress = None
+    show_progress = progress_mode == "always" or (
+        progress_mode == "auto" and sys.stderr.isatty()
+    )
+    if tqdm is not None and show_progress:
+        progress = tqdm(
+            iterator,
+            total=total_batches,
+            desc=f"stage {stage} epoch {epoch}/{total_epochs}",
+            dynamic_ncols=True,
+            leave=False,
+            mininterval=1.0,
+        )
+        iterator = progress
+
+    refresh_every = max(1, progress_interval)
+    for batch_index, batch in iterator:
         iq, labels = _move_batch(batch, device)
         if torch.any(labels < 0):
             raise RuntimeError("Unknown samples must never enter the training loader")
@@ -231,18 +267,14 @@ def train_epoch(
         sample_count += batch_size
         for name, value in losses.items():
             totals[name] = totals.get(name, 0.0) + float(value.detach()) * batch_size
-        if log_interval > 0 and (
+        if progress is not None and (
             batch_index == 1
             or batch_index == total_batches
-            or batch_index % log_interval == 0
+            or batch_index % refresh_every == 0
         ):
             train_loss = totals["total"] / max(sample_count, 1)
-            print(
-                "[train] "
-                f"stage={stage} epoch={epoch}/{total_epochs} "
-                f"batch={batch_index}/{total_batches} "
-                f"train_loss={train_loss:.4f}"
-            )
+            progress.set_postfix(train_loss=f"{train_loss:.4f}")
+            progress.refresh()
     losses = {name: value / max(sample_count, 1) for name, value in totals.items()}
     losses["train_loss"] = losses["total"]
     return losses
@@ -591,7 +623,8 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
             stage=1,
             epoch=epoch,
             total_epochs=args.stage1_epochs,
-            log_interval=args.log_interval,
+            progress_mode=args.progress,
+            progress_interval=args.progress_interval,
         )
         val_losses = evaluate_loss(
             model,
@@ -665,7 +698,8 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
             stage=2,
             epoch=epoch,
             total_epochs=args.stage2_epochs,
-            log_interval=args.log_interval,
+            progress_mode=args.progress,
+            progress_interval=args.progress_interval,
         )
         val_losses = evaluate_loss(
             model,
