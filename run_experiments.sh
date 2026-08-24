@@ -11,8 +11,8 @@ set -uo pipefail
 
 cd "$(dirname "$0")"
 
-# CUDA-capable interpreter (torch 2.7.0+cu126, numpy/sklearn/pytest present).
-PY=${PY:-/home/zjut/miniconda3/envs/torchsig/bin/python}
+# CUDA-capable interpreter for this project.
+PY=${PY:-/home/zjut/miniconda3/envs/RAT-CFSR/bin/python}
 UNKNOWNS=(5G 4G WiFi)
 SEEDS=(42 123 2026)
 GPUS=(0 1)
