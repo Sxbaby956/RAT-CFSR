@@ -78,6 +78,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=20,
         help="Deprecated; progress bars now update every batch.",
     )
+    parser.add_argument(
+        "--progress",
+        choices=("auto", "always", "never"),
+        default="auto",
+        help="Progress bar mode. auto shows bars only in an interactive terminal.",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="auto", help="auto, cpu, cuda, or cuda:0")
     parser.add_argument(
@@ -217,6 +223,7 @@ def train_epoch(
     stage: int,
     epoch: int,
     total_epochs: int,
+    progress_mode: str,
 ) -> dict[str, float]:
     model.train()
     totals: dict[str, float] = {}
@@ -224,7 +231,10 @@ def train_epoch(
     total_batches = len(loader)
     iterator = enumerate(loader, start=1)
     progress = None
-    if tqdm is not None and sys.stderr.isatty():
+    show_progress = progress_mode == "always" or (
+        progress_mode == "auto" and sys.stderr.isatty()
+    )
+    if tqdm is not None and show_progress:
         progress = tqdm(
             iterator,
             total=total_batches,
@@ -598,6 +608,7 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
             stage=1,
             epoch=epoch,
             total_epochs=args.stage1_epochs,
+            progress_mode=args.progress,
         )
         val_losses = evaluate_loss(
             model,
@@ -671,6 +682,7 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
             stage=2,
             epoch=epoch,
             total_epochs=args.stage2_epochs,
+            progress_mode=args.progress,
         )
         val_losses = evaluate_loss(
             model,
