@@ -84,6 +84,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="auto",
         help="Progress bar mode. auto shows bars only in an interactive terminal.",
     )
+    parser.add_argument(
+        "--progress-interval",
+        type=int,
+        default=20,
+        help="Refresh progress bars every N batches.",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="auto", help="auto, cpu, cuda, or cuda:0")
     parser.add_argument(
@@ -224,6 +230,7 @@ def train_epoch(
     epoch: int,
     total_epochs: int,
     progress_mode: str,
+    progress_interval: int,
 ) -> dict[str, float]:
     model.train()
     totals: dict[str, float] = {}
@@ -241,10 +248,12 @@ def train_epoch(
             desc=f"stage {stage} epoch {epoch}/{total_epochs}",
             dynamic_ncols=True,
             leave=False,
+            mininterval=1.0,
         )
         iterator = progress
 
-    for _batch_index, batch in iterator:
+    refresh_every = max(1, progress_interval)
+    for batch_index, batch in iterator:
         iq, labels = _move_batch(batch, device)
         if torch.any(labels < 0):
             raise RuntimeError("Unknown samples must never enter the training loader")
@@ -258,8 +267,13 @@ def train_epoch(
         sample_count += batch_size
         for name, value in losses.items():
             totals[name] = totals.get(name, 0.0) + float(value.detach()) * batch_size
-        if progress is not None:
+        if progress is not None and (
+            batch_index == 1
+            or batch_index == total_batches
+            or batch_index % refresh_every == 0
+        ):
             progress.set_postfix(train_loss=totals["total"] / max(sample_count, 1))
+            progress.refresh()
     losses = {name: value / max(sample_count, 1) for name, value in totals.items()}
     losses["train_loss"] = losses["total"]
     return losses
@@ -609,6 +623,7 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
             epoch=epoch,
             total_epochs=args.stage1_epochs,
             progress_mode=args.progress,
+            progress_interval=args.progress_interval,
         )
         val_losses = evaluate_loss(
             model,
@@ -683,6 +698,7 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
             epoch=epoch,
             total_epochs=args.stage2_epochs,
             progress_mode=args.progress,
+            progress_interval=args.progress_interval,
         )
         val_losses = evaluate_loss(
             model,
