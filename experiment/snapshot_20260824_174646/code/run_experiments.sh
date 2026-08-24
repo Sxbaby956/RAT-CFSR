@@ -85,8 +85,4 @@ for p in "${pids[@]}"; do
     wait "$p" || log "WARN: job pid=$p exited non-zero"
 done
 
-# Render the 3-unknown x 3-seed confusion-matrix grid once all runs finish.
-log "Rendering confusion matrix grid"
-"$PY" -m rat_cfsr.plot_grid --output-root outputs
-
 log "ALL_EXPERIMENTS_DONE"

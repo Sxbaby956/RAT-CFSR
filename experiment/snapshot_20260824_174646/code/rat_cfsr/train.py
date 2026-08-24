@@ -4,12 +4,18 @@ import argparse
 import copy
 import json
 import random
+import sys
 import time
 from pathlib import Path
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+
+try:
+    from tqdm.auto import tqdm
+except ImportError:  # pragma: no cover - exercised only in minimal environments.
+    tqdm = None
 
 from .calibration import ClassConditionalCalibrator, ClassConditionalScoreCalibrator
 from .data import (
@@ -25,7 +31,6 @@ from .metrics import (
     evaluate_open_set,
     format_confusion_matrix,
     open_set_confusion_matrix,
-    save_confusion_matrix_image,
 )
 from .model import RATCFSR
 
@@ -80,7 +85,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--threshold-quantile", type=float, default=0.95)
     parser.add_argument(
         "--open-set-score",
-        choices=("energy", "max_softmax", "max_logit", "prototype", "reconstruction"),
+        choices=("energy", "max_softmax", "max_logit", "reconstruction"),
         default="energy",
         help="Unknown score used for final rejection. Larger scores mean more unknown.",
     )
@@ -89,19 +94,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--log-interval",
         type=int,
         default=20,
-        help="Print one training status line every N batches; 0 disables batch logs.",
+        help="Deprecated; use --progress to control batch progress display.",
     )
     parser.add_argument(
         "--progress",
         choices=("auto", "always", "never"),
-        default="never",
-        help="Deprecated; text logs are used instead of progress bars.",
+        default="always",
+        help="Progress bar mode.",
     )
     parser.add_argument(
         "--progress-interval",
         type=int,
         default=20,
-        help="Deprecated; use --log-interval for text log frequency.",
+        help="Refresh progress bar loss display every N batches.",
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="auto", help="auto, cpu, cuda, or cuda:0")
@@ -242,13 +247,31 @@ def train_epoch(
     stage: int,
     epoch: int,
     total_epochs: int,
-    log_interval: int,
+    progress_mode: str,
+    progress_interval: int,
 ) -> dict[str, float]:
     model.train()
     totals: dict[str, float] = {}
     sample_count = 0
     total_batches = len(loader)
-    for batch_index, batch in enumerate(loader, start=1):
+    iterator = enumerate(loader, start=1)
+    progress = None
+    show_progress = progress_mode == "always" or (
+        progress_mode == "auto" and sys.stderr.isatty()
+    )
+    if tqdm is not None and show_progress:
+        progress = tqdm(
+            iterator,
+            total=total_batches,
+            desc=f"stage {stage} epoch {epoch}/{total_epochs}",
+            dynamic_ncols=True,
+            leave=False,
+            mininterval=1.0,
+        )
+        iterator = progress
+
+    refresh_every = max(1, progress_interval)
+    for batch_index, batch in iterator:
         iq, labels = _move_batch(batch, device)
         if torch.any(labels < 0):
             raise RuntimeError("Unknown samples must never enter the training loader")
@@ -262,18 +285,14 @@ def train_epoch(
         sample_count += batch_size
         for name, value in losses.items():
             totals[name] = totals.get(name, 0.0) + float(value.detach()) * batch_size
-        if log_interval > 0 and (
+        if progress is not None and (
             batch_index == 1
             or batch_index == total_batches
-            or batch_index % log_interval == 0
+            or batch_index % refresh_every == 0
         ):
             train_loss = totals["total"] / max(sample_count, 1)
-            print(
-                "[train] "
-                f"stage={stage} epoch={epoch}/{total_epochs} "
-                f"batch={batch_index}/{total_batches} "
-                f"train_loss={train_loss:.4f}"
-            )
+            progress.set_postfix(train_loss=f"{train_loss:.4f}")
+            progress.refresh()
     losses = {name: value / max(sample_count, 1) for name, value in totals.items()}
     losses["train_loss"] = losses["total"]
     return losses
@@ -325,24 +344,21 @@ def closed_set_accuracy(
 @torch.no_grad()
 def collect_outputs(
     model: RATCFSR, loader: DataLoader, device: torch.device
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     model.eval()
     all_errors = []
     all_labels = []
     all_logits = []
-    all_features = []
     for batch in loader:
         iq, labels = _move_batch(batch, device)
         outputs = model(iq)
         all_errors.append(outputs["reconstruction_errors"].cpu().numpy())
         all_labels.append(labels.cpu().numpy())
         all_logits.append(outputs["logits"].cpu().numpy())
-        all_features.append(outputs["fused_semantic"].cpu().numpy())
     return (
         np.concatenate(all_errors),
         np.concatenate(all_labels),
         np.concatenate(all_logits),
-        np.concatenate(all_features),
     )
 
 
@@ -369,45 +385,13 @@ def unknown_scores_from_logits(
     raise ValueError(f"Logit score method does not support {method!r}")
 
 
-def fit_feature_prototypes(features: np.ndarray, labels: np.ndarray) -> np.ndarray:
-    features = np.asarray(features, dtype=np.float64)
-    labels = np.asarray(labels, dtype=np.int64)
-    if features.ndim != 2 or labels.shape != (features.shape[0],):
-        raise ValueError("Expected features [N, D] and labels [N]")
-    prototypes = []
-    for class_index in range(int(labels.max()) + 1):
-        matching = features[labels == class_index]
-        if matching.shape[0] < 2:
-            raise ValueError(f"Class {class_index} needs at least two feature samples")
-        prototypes.append(matching.mean(axis=0))
-    return np.stack(prototypes, axis=0)
-
-
-def prototype_unknown_scores(
-    features: np.ndarray,
-    candidate_labels: np.ndarray,
-    prototypes: np.ndarray,
-) -> np.ndarray:
-    features = np.asarray(features, dtype=np.float64)
-    candidate_labels = np.asarray(candidate_labels, dtype=np.int64)
-    prototypes = np.asarray(prototypes, dtype=np.float64)
-    if features.ndim != 2 or prototypes.ndim != 2:
-        raise ValueError("Expected features [N, D] and prototypes [K, D]")
-    if candidate_labels.shape != (features.shape[0],):
-        raise ValueError("Expected candidate_labels [N]")
-    selected = prototypes[candidate_labels]
-    return np.linalg.norm(features - selected, axis=1)
-
-
 def calibrate_and_predict(
     args: argparse.Namespace,
     calibration_errors: np.ndarray,
     calibration_labels: np.ndarray,
     calibration_logits: np.ndarray,
-    calibration_features: np.ndarray,
     test_errors: np.ndarray,
     test_logits: np.ndarray,
-    test_features: np.ndarray,
 ) -> tuple[object, object, np.ndarray]:
     if args.open_set_score == "reconstruction":
         calibrator = ClassConditionalCalibrator(args.threshold_quantile).fit(
@@ -415,22 +399,6 @@ def calibrate_and_predict(
         )
         predictions = calibrator.predict(test_errors)
         test_unknown_scores = predictions.candidate_scores
-        return calibrator, predictions, test_unknown_scores
-
-    candidate_labels = np.argmax(test_logits, axis=1)
-    if args.open_set_score == "prototype":
-        calibration_candidates = np.argmax(calibration_logits, axis=1)
-        prototypes = fit_feature_prototypes(calibration_features, calibration_labels)
-        calibration_scores = prototype_unknown_scores(
-            calibration_features, calibration_candidates, prototypes
-        )
-        test_unknown_scores = prototype_unknown_scores(
-            test_features, candidate_labels, prototypes
-        )
-        calibrator = ClassConditionalScoreCalibrator(args.threshold_quantile).fit(
-            calibration_scores, calibration_labels
-        )
-        predictions = calibrator.predict(test_unknown_scores, candidate_labels)
         return calibrator, predictions, test_unknown_scores
 
     calibration_scores = unknown_scores_from_logits(
@@ -442,6 +410,7 @@ def calibrate_and_predict(
     calibrator = ClassConditionalScoreCalibrator(args.threshold_quantile).fit(
         calibration_scores, calibration_labels
     )
+    candidate_labels = np.argmax(test_logits, axis=1)
     predictions = calibrator.predict(test_unknown_scores, candidate_labels)
     return calibrator, predictions, test_unknown_scores
 
@@ -495,15 +464,12 @@ def evaluate_model(
     known_class_names: list[str],
 ) -> dict[str, float]:
     print("[status] Collecting calibration outputs")
-    (
-        calibration_errors,
-        calibration_labels,
-        calibration_logits,
-        calibration_features,
-    ) = collect_outputs(model, loaders["calibration"], device)
+    calibration_errors, calibration_labels, calibration_logits = collect_outputs(
+        model, loaders["calibration"], device
+    )
     print("[status] Fitting open-set calibrator")
     print("[status] Collecting test outputs")
-    test_errors, test_labels, test_logits, test_features = collect_outputs(
+    test_errors, test_labels, test_logits = collect_outputs(
         model, loaders["test"], device
     )
     calibrator, predictions, test_unknown_scores = calibrate_and_predict(
@@ -511,10 +477,8 @@ def evaluate_model(
         calibration_errors=calibration_errors,
         calibration_labels=calibration_labels,
         calibration_logits=calibration_logits,
-        calibration_features=calibration_features,
         test_errors=test_errors,
         test_logits=test_logits,
-        test_features=test_features,
     )
     print("[status] Evaluating open-set metrics")
     metrics = evaluate_open_set(
@@ -536,11 +500,6 @@ def evaluate_model(
     (args.output_dir / "confusion_matrix.txt").write_text(
         format_confusion_matrix(confusion), encoding="utf-8"
     )
-    save_confusion_matrix_image(
-        confusion,
-        args.output_dir / "confusion_matrix.png",
-        title=f"Open-set confusion matrix (unknown={args.unknown})",
-    )
     _write_json(args.output_dir / "metrics.json", metrics)
     np.savez_compressed(
         args.output_dir / "test_predictions.npz",
@@ -552,7 +511,6 @@ def evaluate_model(
         class_scores=predictions.class_scores,
         reconstruction_errors=test_errors,
         logits=test_logits,
-        fused_features=test_features,
         open_set_score=np.asarray(args.open_set_score),
     )
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
@@ -700,7 +658,8 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
             stage=1,
             epoch=epoch,
             total_epochs=args.stage1_epochs,
-            log_interval=args.log_interval,
+            progress_mode=args.progress,
+            progress_interval=args.progress_interval,
         )
         val_losses = evaluate_loss(
             model,
@@ -793,7 +752,8 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
             stage=2,
             epoch=epoch,
             total_epochs=args.stage2_epochs,
-            log_interval=args.log_interval,
+            progress_mode=args.progress,
+            progress_interval=args.progress_interval,
         )
         val_losses = evaluate_loss(
             model,

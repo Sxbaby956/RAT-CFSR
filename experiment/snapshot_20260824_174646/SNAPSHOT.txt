@@ -1,0 +1,8 @@
+snapshot: experiment/snapshot_20260824_174646
+created_at: 2026-08-24T17:46:46
+corrected_at: 2026-08-24T17:48:08
+code_source: git HEAD dd234ae Add stage-wise early stopping
+note: code/ was re-exported from committed code before current uncommitted modifications; outputs/rat_cfsr contains the previous 9-run training results.
+contents:
+- code/: pre-current-modification project code from git commit dd234ae
+- outputs/rat_cfsr/: previous training results
