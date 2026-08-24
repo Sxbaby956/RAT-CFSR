@@ -35,14 +35,14 @@ class IQEncoder(nn.Module):
     def __init__(self, semantic_dim: int) -> None:
         super().__init__()
         self.stem = nn.Sequential(
-            nn.Conv1d(2, 32, kernel_size=11, stride=2, padding=5, bias=False),
+            nn.Conv1d(4, 32, kernel_size=11, stride=1, padding=5, bias=False),
             nn.BatchNorm1d(32),
             nn.ReLU(inplace=True),
-            nn.MaxPool1d(kernel_size=3, stride=2, padding=1),
         )
         self.blocks = nn.Sequential(
-            ResidualBlock1D(32, 64, stride=2),
-            ResidualBlock1D(64, 128, stride=2),
+            ResidualBlock1D(32, 64, stride=1),
+            ResidualBlock1D(64, 128, stride=1),
+            ResidualBlock1D(128, 128, stride=2),
             ResidualBlock1D(128, 128, stride=2),
             ResidualBlock1D(128, 128, stride=1),
         )
@@ -54,8 +54,25 @@ class IQEncoder(nn.Module):
             nn.GELU(),
         )
 
+    @staticmethod
+    def modulation_features(iq: torch.Tensor) -> torch.Tensor:
+        if iq.ndim != 3 or iq.size(1) != 2:
+            raise ValueError("Expected IQ input with shape [B, 2, T]")
+        i = iq[:, 0]
+        q = iq[:, 1]
+        amplitude = torch.sqrt(i.square() + q.square() + 1e-8)
+        complex_iq = torch.complex(i.float(), q.float())
+        phase_delta = torch.zeros_like(i)
+        if iq.size(-1) > 1:
+            phase_delta[:, 1:] = torch.angle(
+                complex_iq[:, 1:] * torch.conj(complex_iq[:, :-1])
+            )
+            phase_delta[:, 0] = phase_delta[:, 1]
+        return torch.stack((i, q, amplitude, phase_delta), dim=1)
+
     def forward(self, iq: torch.Tensor) -> torch.Tensor:
-        return self.projection(self.pool(self.blocks(self.stem(iq))))
+        features = self.modulation_features(iq)
+        return self.projection(self.pool(self.blocks(self.stem(features))))
 
 
 class DilatedSpectrogramBranch(nn.Module):
@@ -258,4 +275,3 @@ class RATCFSR(nn.Module):
             "reconstructed": reconstructed,
             "spectrogram": spectrogram,
         }
-

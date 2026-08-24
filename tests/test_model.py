@@ -1,7 +1,25 @@
 import torch
 
 from rat_cfsr.losses import RATCFSRLoss
-from rat_cfsr.model import RATCFSR
+from rat_cfsr.model import IQEncoder, RATCFSR
+
+
+def test_iq_encoder_builds_modulation_feature_channels() -> None:
+    iq = torch.tensor(
+        [
+            [
+                [1.0, 0.0, -1.0, 0.0],
+                [0.0, 1.0, 0.0, -1.0],
+            ]
+        ]
+    )
+
+    features = IQEncoder.modulation_features(iq)
+
+    assert features.shape == (1, 4, 4)
+    assert torch.allclose(features[:, :2], iq)
+    assert torch.all(features[:, 2] > 0)
+    assert torch.isfinite(features).all()
 
 
 def test_model_forward_and_loss_backward() -> None:
@@ -26,4 +44,3 @@ def test_model_forward_and_loss_backward() -> None:
     losses = RATCFSRLoss()(outputs, labels)
     losses["total"].backward()
     assert torch.isfinite(losses["total"])
-
