@@ -21,7 +21,11 @@ from .data import (
     summarize_recordings,
 )
 from .losses import RATCFSRLoss
-from .metrics import evaluate_open_set
+from .metrics import (
+    evaluate_open_set,
+    format_confusion_matrix,
+    open_set_confusion_matrix,
+)
 from .model import RATCFSR
 
 
@@ -361,6 +365,7 @@ def evaluate_model(
     model: RATCFSR,
     loaders: dict[str, DataLoader],
     device: torch.device,
+    known_class_names: list[str],
 ) -> dict[str, float]:
     print("[status] Collecting calibration outputs")
     calibration_errors, calibration_labels, calibration_logits = collect_outputs(
@@ -386,8 +391,19 @@ def evaluate_model(
         candidate_labels=predictions.candidate_labels,
         unknown_scores=predictions.candidate_scores,
     )
+    confusion = open_set_confusion_matrix(
+        true_labels=test_labels,
+        predicted_labels=predictions.labels,
+        known_class_names=known_class_names,
+        unknown_name=f"unknown:{args.unknown}",
+    )
+    metrics["confusion_matrix"] = confusion
 
     calibrator.save(args.output_dir / "calibrator.json")
+    _write_json(args.output_dir / "confusion_matrix.json", confusion)
+    (args.output_dir / "confusion_matrix.txt").write_text(
+        format_confusion_matrix(confusion), encoding="utf-8"
+    )
     _write_json(args.output_dir / "metrics.json", metrics)
     np.savez_compressed(
         args.output_dir / "test_predictions.npz",
@@ -468,7 +484,13 @@ def run_test_only(args: argparse.Namespace) -> dict[str, object]:
         f"open_set_score={args.open_set_score}; "
         f"threshold_quantile={args.threshold_quantile}"
     )
-    metrics = evaluate_model(args, model, loaders, device)
+    metrics = evaluate_model(
+        args,
+        model,
+        loaders,
+        device,
+        known_class_names=list(split_summary["known_protocols"]),
+    )
     return {
         "split_summary": split_summary,
         "metrics": metrics,
@@ -620,7 +642,13 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
     print(f"[status] Saved checkpoint to {args.output_dir / 'checkpoint.pt'}")
     metrics = None
     if evaluate_after_training:
-        metrics = evaluate_model(args, model, loaders, device)
+        metrics = evaluate_model(
+            args,
+            model,
+            loaders,
+            device,
+            known_class_names=list(split_summary["known_protocols"]),
+        )
     else:
         print("[status] Train-only mode: skipped test evaluation")
     result = {

@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import numpy as np
-from sklearn.metrics import average_precision_score, f1_score, roc_auc_score
+from sklearn.metrics import (
+    average_precision_score,
+    confusion_matrix,
+    f1_score,
+    roc_auc_score,
+)
 
 # ``np.trapezoid`` was introduced in NumPy 2.0; keep compatibility with 1.x.
 _trapezoid = getattr(np, "trapezoid", np.trapz)
@@ -71,3 +76,50 @@ def evaluate_open_set(
         metrics["aupr"] = float("nan")
     return metrics
 
+
+def open_set_confusion_matrix(
+    true_labels: np.ndarray,
+    predicted_labels: np.ndarray,
+    known_class_names: list[str],
+    unknown_name: str = "unknown",
+) -> dict[str, object]:
+    true_labels = np.asarray(true_labels, dtype=np.int64)
+    predicted_labels = np.asarray(predicted_labels, dtype=np.int64)
+    class_ids = [-1, *range(len(known_class_names))]
+    label_names = [unknown_name, *known_class_names]
+    matrix = confusion_matrix(true_labels, predicted_labels, labels=class_ids)
+    row_sums = matrix.sum(axis=1, keepdims=True)
+    normalized = np.divide(
+        matrix,
+        np.maximum(row_sums, 1),
+        out=np.zeros_like(matrix, dtype=np.float64),
+        where=row_sums > 0,
+    )
+    return {
+        "labels": label_names,
+        "class_ids": class_ids,
+        "counts": matrix.astype(int).tolist(),
+        "row_normalized": normalized.tolist(),
+    }
+
+
+def format_confusion_matrix(confusion: dict[str, object]) -> str:
+    labels = [str(label) for label in confusion["labels"]]
+    counts = np.asarray(confusion["counts"], dtype=np.int64)
+    normalized = np.asarray(confusion["row_normalized"], dtype=np.float64)
+    width = max(10, *(len(label) for label in labels))
+
+    lines = ["Confusion matrix counts (rows=true, cols=predicted)"]
+    header = " " * width + "  " + "  ".join(label.rjust(width) for label in labels)
+    lines.append(header)
+    for label, row in zip(labels, counts):
+        values = "  ".join(str(int(value)).rjust(width) for value in row)
+        lines.append(label.rjust(width) + "  " + values)
+
+    lines.append("")
+    lines.append("Confusion matrix row-normalized (rows sum to 1.0)")
+    lines.append(header)
+    for label, row in zip(labels, normalized):
+        values = "  ".join(f"{value:.4f}".rjust(width) for value in row)
+        lines.append(label.rjust(width) + "  " + values)
+    return "\n".join(lines) + "\n"
