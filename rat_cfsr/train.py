@@ -50,6 +50,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--stage1-epochs", type=int, default=10)
     parser.add_argument("--stage2-epochs", type=int, default=20)
+    parser.add_argument(
+        "--early-stop-patience",
+        type=int,
+        default=5,
+        help="Stop a stage after this many epochs without validation improvement; 0 disables.",
+    )
+    parser.add_argument(
+        "--early-stop-min-delta",
+        type=float,
+        default=1e-4,
+        help="Minimum monitored metric improvement required to reset patience.",
+    )
+    parser.add_argument(
+        "--early-stop-metric",
+        choices=("val_loss", "val_acc"),
+        default="val_loss",
+        help="Validation metric monitored by early stopping.",
+    )
     parser.add_argument("--stage1-lr", type=float, default=3e-4)
     parser.add_argument("--backbone-lr", type=float, default=3e-5)
     parser.add_argument("--class-module-lr", type=float, default=1e-4)
@@ -418,9 +436,24 @@ def save_checkpoint(
             "ae_noise_std": args.ae_noise_std,
             "open_set_score": args.open_set_score,
             "energy_temperature": args.energy_temperature,
+            "early_stop_patience": args.early_stop_patience,
+            "early_stop_min_delta": args.early_stop_min_delta,
+            "early_stop_metric": args.early_stop_metric,
         },
     }
     torch.save(checkpoint, args.output_dir / "checkpoint.pt")
+
+
+def _early_stop_score(row: dict[str, object], metric: str) -> float:
+    if metric == "val_loss":
+        return -float(row["val_loss"])
+    if metric == "val_acc":
+        return float(row["calibration_accuracy"])
+    raise ValueError(f"Unsupported early-stop metric: {metric}")
+
+
+def _is_improved(score: float, best_score: float, min_delta: float) -> bool:
+    return score > best_score + min_delta
 
 
 def evaluate_model(
@@ -609,6 +642,8 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
         stage1_optimizer, T_max=max(args.stage1_epochs, 1)
     )
     best_accuracy = -1.0
+    best_stage1_score = float("-inf")
+    stage1_bad_epochs = 0
     best_state = copy.deepcopy(model.state_dict())
     print("[status] Stage 1 start: closed-set classifier warmup")
     for epoch in range(1, args.stage1_epochs + 1):
@@ -660,11 +695,27 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
         )
         if calibration_accuracy > best_accuracy:
             best_accuracy = calibration_accuracy
-            best_state = copy.deepcopy(model.state_dict())
             print(
                 f"[status] Stage 1 epoch {epoch}: new best calibration accuracy "
                 f"{best_accuracy:.4f}"
             )
+        score = _early_stop_score(row, args.early_stop_metric)
+        if _is_improved(score, best_stage1_score, args.early_stop_min_delta):
+            best_stage1_score = score
+            stage1_bad_epochs = 0
+            best_state = copy.deepcopy(model.state_dict())
+        else:
+            stage1_bad_epochs += 1
+            if (
+                args.early_stop_patience > 0
+                and stage1_bad_epochs >= args.early_stop_patience
+            ):
+                print(
+                    "[early-stop] "
+                    f"stage=1 epoch={epoch} metric={args.early_stop_metric} "
+                    f"patience={args.early_stop_patience}"
+                )
+                break
     model.load_state_dict(best_state)
     print("[status] Stage 1 done: restored best warmup checkpoint")
 
@@ -685,6 +736,9 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
     stage2_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         stage2_optimizer, T_max=max(args.stage2_epochs, 1)
     )
+    best_stage2_score = float("-inf")
+    stage2_bad_epochs = 0
+    best_stage2_state = copy.deepcopy(model.state_dict())
     print("[status] Stage 2 start: reconstruction/margin fine-tuning")
     for epoch in range(1, args.stage2_epochs + 1):
         started = time.time()
@@ -733,6 +787,25 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
             f"gate={np.round(gate_mean, 4).tolist()} "
             f"seconds={row['seconds']:.1f}"
         )
+        score = _early_stop_score(row, args.early_stop_metric)
+        if _is_improved(score, best_stage2_score, args.early_stop_min_delta):
+            best_stage2_score = score
+            stage2_bad_epochs = 0
+            best_stage2_state = copy.deepcopy(model.state_dict())
+        else:
+            stage2_bad_epochs += 1
+            if (
+                args.early_stop_patience > 0
+                and stage2_bad_epochs >= args.early_stop_patience
+            ):
+                print(
+                    "[early-stop] "
+                    f"stage=2 epoch={epoch} metric={args.early_stop_metric} "
+                    f"patience={args.early_stop_patience}"
+                )
+                break
+    model.load_state_dict(best_stage2_state)
+    print("[status] Stage 2 done: restored best fine-tuned checkpoint")
 
     save_checkpoint(args, model, split_summary, num_classes)
     _write_json(args.output_dir / "history.json", history)
