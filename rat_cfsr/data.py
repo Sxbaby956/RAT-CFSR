@@ -137,30 +137,55 @@ def discover_recordings(root: str | Path) -> list[Recording]:
 def split_recordings(
     recordings: Sequence[Recording],
     known_protocols: Sequence[str],
+    seed: int = 42,
+    train_fraction: float = 0.6,
+    calibration_fraction: float = 0.2,
 ) -> dict[str, list[Recording]]:
-    """Apply the leakage-resistant Day-1/Day-2 split used by this project.
+    """Split each protocol/day group into train/calibration/test recordings.
 
-    Train: Day 1, sets 1-4, known protocols only.
-    Calibration: Day 1, set 5, known protocols only.
-    Test: Day 2, all sets, all protocols.
+    Each protocol is split independently inside each collection day, so Day 1
+    and Day 2 are represented evenly in every split. Unknown protocols are kept
+    out of train/calibration and only their test fraction is used.
     """
     known = set(known_protocols)
     if not known or not known.issubset(PROTOCOLS):
         raise ValueError(f"Invalid known protocol set: {sorted(known)}")
+    if not 0.0 < train_fraction < 1.0:
+        raise ValueError("train_fraction must be in (0, 1)")
+    if not 0.0 < calibration_fraction < 1.0:
+        raise ValueError("calibration_fraction must be in (0, 1)")
+    if train_fraction + calibration_fraction >= 1.0:
+        raise ValueError("train_fraction + calibration_fraction must be < 1")
 
     splits = {"train": [], "calibration": [], "test": []}
+    grouped: dict[tuple[str, int], list[Recording]] = {}
     for recording in recordings:
-        if recording.day == 1 and recording.protocol in known:
-            if recording.set_index <= 4:
-                splits["train"].append(recording)
-            elif recording.set_index == 5:
-                splits["calibration"].append(recording)
-        elif recording.day == 2:
-            splits["test"].append(recording)
+        grouped.setdefault((recording.protocol, recording.day), []).append(recording)
+
+    rng = np.random.default_rng(seed)
+    for (protocol, _day), values in sorted(grouped.items()):
+        ordered = sorted(values, key=lambda item: item.recording_id)
+        permutation = rng.permutation(len(ordered))
+        shuffled = [ordered[index] for index in permutation]
+        train_count = int(round(len(shuffled) * train_fraction))
+        calibration_count = int(round(len(shuffled) * calibration_fraction))
+        train_count = max(1, min(train_count, len(shuffled) - 2))
+        calibration_count = max(
+            1, min(calibration_count, len(shuffled) - train_count - 1)
+        )
+        train_values = shuffled[:train_count]
+        calibration_values = shuffled[train_count : train_count + calibration_count]
+        test_values = shuffled[train_count + calibration_count :]
+
+        if protocol in known:
+            splits["train"].extend(train_values)
+            splits["calibration"].extend(calibration_values)
+        splits["test"].extend(test_values)
 
     for split_name, values in splits.items():
         if not values:
             raise ValueError(f"Split {split_name!r} is empty")
+        splits[split_name] = sorted(values, key=lambda item: item.recording_id)
     return splits
 
 
@@ -319,4 +344,3 @@ def summarize_recordings(recordings: Sequence[Recording]) -> dict[str, object]:
         "sample_rates": sorted({recording.sample_rate for recording in recordings}),
         "total_complex_samples": int(sum(recording.sample_count for recording in recordings)),
     }
-

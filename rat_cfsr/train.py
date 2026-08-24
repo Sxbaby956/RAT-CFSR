@@ -109,7 +109,7 @@ def make_loaders(args: argparse.Namespace) -> tuple[dict[str, DataLoader], dict]
     recordings = discover_recordings(args.data_root)
     known_protocols = [protocol for protocol in PROTOCOLS if protocol != args.unknown]
     label_map = {protocol: index for index, protocol in enumerate(known_protocols)}
-    recording_splits = split_recordings(recordings, known_protocols)
+    recording_splits = split_recordings(recordings, known_protocols, seed=args.seed)
 
     datasets: dict[str, PowderWindowDataset] = {}
     window_counts = {}
@@ -157,6 +157,13 @@ def make_loaders(args: argparse.Namespace) -> tuple[dict[str, DataLoader], dict]
         "dataset": summarize_recordings(recordings),
         "known_protocols": known_protocols,
         "unknown_protocol": args.unknown,
+        "split_strategy": "protocol_day_stratified_random_60_20_20",
+        "split_seed": args.seed,
+        "split_fractions": {
+            "train": 0.6,
+            "calibration": 0.2,
+            "test": 0.2,
+        },
         "label_map": label_map,
         "recording_counts": {
             name: len(values) for name, values in recording_splits.items()

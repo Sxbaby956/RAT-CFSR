@@ -13,16 +13,19 @@ def main() -> None:
     parser.add_argument("--unknown", choices=PROTOCOLS, default="5G")
     parser.add_argument("--window-ms", type=float, default=1.0)
     parser.add_argument("--max-windows-per-recording", type=int, default=256)
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     recordings = discover_recordings(args.data_root)
     known = [protocol for protocol in PROTOCOLS if protocol != args.unknown]
     label_map = {protocol: index for index, protocol in enumerate(known)}
-    splits = split_recordings(recordings, known)
+    splits = split_recordings(recordings, known, seed=args.seed)
     payload = {
         "dataset": summarize_recordings(recordings),
         "known_protocols": known,
         "unknown_protocol": args.unknown,
+        "split_strategy": "protocol_day_stratified_random_60_20_20",
+        "split_seed": args.seed,
         "splits": {},
     }
     for name, values in splits.items():
@@ -45,4 +48,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
