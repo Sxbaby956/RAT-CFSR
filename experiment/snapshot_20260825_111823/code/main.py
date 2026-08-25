@@ -87,14 +87,6 @@ def run_matrix(args) -> None:
     print(f"[snapshot] saved current code and results: {snapshot_dir}")
 
 
-def save_run_snapshot(output_dir: Path) -> None:
-    snapshot_dir = copy_current_snapshot(
-        repo_root=Path(__file__).resolve().parent,
-        output_root=Path(output_dir),
-    )
-    print(f"[snapshot] saved current code and results: {snapshot_dir}")
-
-
 def main() -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(line_buffering=True)
@@ -106,8 +98,6 @@ def main() -> None:
         run_test_only(args)
     elif args.single or args.train:
         run(args, evaluate_after_training=not args.train)
-        if not args.dry_run:
-            save_run_snapshot(args.output_dir)
     else:
         run_matrix(args)
 

@@ -94,8 +94,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--open-weight",
         type=float,
-        default=0.1,
-        help="Weight for the balanced CFSR one-vs-rest pseudo-unknown binary loss.",
+        default=0.2,
+        help="Weight for the CFSR one-vs-rest pseudo-unknown binary loss.",
     )
     parser.add_argument("--margin", type=float, default=0.2)
     parser.add_argument("--threshold-quantile", type=float, default=0.90)
@@ -538,59 +538,6 @@ def _subset_open_set_metrics(
     return metrics
 
 
-def qam_pair_snr_diagnostics(
-    true_labels: np.ndarray,
-    predicted_labels: np.ndarray,
-    snrs: np.ndarray,
-    known_class_names: list[str],
-) -> dict[str, object]:
-    if "QAM16" not in known_class_names or "QAM64" not in known_class_names:
-        return {}
-
-    qam16_id = known_class_names.index("QAM16")
-    qam64_id = known_class_names.index("QAM64")
-    result: dict[str, object] = {
-        "class_ids": {
-            "QAM16": qam16_id,
-            "QAM64": qam64_id,
-        },
-        "by_snr": {},
-    }
-    for snr in sorted(np.unique(snrs)):
-        snr_mask = snrs == snr
-        qam16_mask = snr_mask & (true_labels == qam16_id)
-        qam64_mask = snr_mask & (true_labels == qam64_id)
-        qam16_count = int(np.sum(qam16_mask))
-        qam64_count = int(np.sum(qam64_mask))
-        result["by_snr"][str(int(snr))] = {
-            "QAM16": {
-                "sample_count": qam16_count,
-                "accepted_accuracy": float(np.mean(predicted_labels[qam16_mask] == qam16_id))
-                if qam16_count
-                else 0.0,
-                "confused_as_QAM64": float(np.mean(predicted_labels[qam16_mask] == qam64_id))
-                if qam16_count
-                else 0.0,
-                "false_reject_rate": float(np.mean(predicted_labels[qam16_mask] < 0))
-                if qam16_count
-                else 0.0,
-            },
-            "QAM64": {
-                "sample_count": qam64_count,
-                "accepted_accuracy": float(np.mean(predicted_labels[qam64_mask] == qam64_id))
-                if qam64_count
-                else 0.0,
-                "confused_as_QAM16": float(np.mean(predicted_labels[qam64_mask] == qam16_id))
-                if qam64_count
-                else 0.0,
-                "false_reject_rate": float(np.mean(predicted_labels[qam64_mask] < 0))
-                if qam64_count
-                else 0.0,
-            },
-        }
-    return result
-
-
 def grouped_open_set_metrics(
     true_labels: np.ndarray,
     predicted_labels: np.ndarray,
@@ -623,12 +570,6 @@ def grouped_open_set_metrics(
         ),
         "unknown_modulation_metrics": {},
         "known_modulation_accuracy": {},
-        "qam_pair_snr_diagnostics": qam_pair_snr_diagnostics(
-            true_labels=true_labels,
-            predicted_labels=predicted_labels,
-            snrs=snrs,
-            known_class_names=known_class_names,
-        ),
     }
 
     for modulation in unknown_modulations:

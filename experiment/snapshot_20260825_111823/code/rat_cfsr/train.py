@@ -91,12 +91,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ae-noise-std", type=float, default=0.01)
     parser.add_argument("--reconstruction-weight", type=float, default=1.0)
     parser.add_argument("--margin-weight", type=float, default=0.2)
-    parser.add_argument(
-        "--open-weight",
-        type=float,
-        default=0.1,
-        help="Weight for the balanced CFSR one-vs-rest pseudo-unknown binary loss.",
-    )
     parser.add_argument("--margin", type=float, default=0.2)
     parser.add_argument("--threshold-quantile", type=float, default=0.90)
     parser.add_argument(
@@ -495,7 +489,6 @@ def save_checkpoint(
             "hop_length": args.hop_length,
             "modality_dropout": args.modality_dropout,
             "ae_noise_std": args.ae_noise_std,
-            "open_weight": args.open_weight,
             "open_set_score": args.open_set_score,
             "energy_temperature": args.energy_temperature,
             "early_stop_patience": args.early_stop_patience,
@@ -538,59 +531,6 @@ def _subset_open_set_metrics(
     return metrics
 
 
-def qam_pair_snr_diagnostics(
-    true_labels: np.ndarray,
-    predicted_labels: np.ndarray,
-    snrs: np.ndarray,
-    known_class_names: list[str],
-) -> dict[str, object]:
-    if "QAM16" not in known_class_names or "QAM64" not in known_class_names:
-        return {}
-
-    qam16_id = known_class_names.index("QAM16")
-    qam64_id = known_class_names.index("QAM64")
-    result: dict[str, object] = {
-        "class_ids": {
-            "QAM16": qam16_id,
-            "QAM64": qam64_id,
-        },
-        "by_snr": {},
-    }
-    for snr in sorted(np.unique(snrs)):
-        snr_mask = snrs == snr
-        qam16_mask = snr_mask & (true_labels == qam16_id)
-        qam64_mask = snr_mask & (true_labels == qam64_id)
-        qam16_count = int(np.sum(qam16_mask))
-        qam64_count = int(np.sum(qam64_mask))
-        result["by_snr"][str(int(snr))] = {
-            "QAM16": {
-                "sample_count": qam16_count,
-                "accepted_accuracy": float(np.mean(predicted_labels[qam16_mask] == qam16_id))
-                if qam16_count
-                else 0.0,
-                "confused_as_QAM64": float(np.mean(predicted_labels[qam16_mask] == qam64_id))
-                if qam16_count
-                else 0.0,
-                "false_reject_rate": float(np.mean(predicted_labels[qam16_mask] < 0))
-                if qam16_count
-                else 0.0,
-            },
-            "QAM64": {
-                "sample_count": qam64_count,
-                "accepted_accuracy": float(np.mean(predicted_labels[qam64_mask] == qam64_id))
-                if qam64_count
-                else 0.0,
-                "confused_as_QAM16": float(np.mean(predicted_labels[qam64_mask] == qam16_id))
-                if qam64_count
-                else 0.0,
-                "false_reject_rate": float(np.mean(predicted_labels[qam64_mask] < 0))
-                if qam64_count
-                else 0.0,
-            },
-        }
-    return result
-
-
 def grouped_open_set_metrics(
     true_labels: np.ndarray,
     predicted_labels: np.ndarray,
@@ -623,12 +563,6 @@ def grouped_open_set_metrics(
         ),
         "unknown_modulation_metrics": {},
         "known_modulation_accuracy": {},
-        "qam_pair_snr_diagnostics": qam_pair_snr_diagnostics(
-            true_labels=true_labels,
-            predicted_labels=predicted_labels,
-            snrs=snrs,
-            known_class_names=known_class_names,
-        ),
     }
 
     for modulation in unknown_modulations:
@@ -811,13 +745,7 @@ def run_test_only(args: argparse.Namespace) -> dict[str, object]:
         modality_dropout=float(model_config["modality_dropout"]),
         ae_noise_std=float(model_config["ae_noise_std"]),
     ).to(device)
-    missing, unexpected = model.load_state_dict(checkpoint["model_state"], strict=False)
-    if missing or unexpected:
-        print(
-            "[status] "
-            f"checkpoint loaded with missing={len(missing)} unexpected={len(unexpected)} "
-            "(architecture-compatible non-strict load)"
-        )
+    model.load_state_dict(checkpoint["model_state"])
 
     print(json.dumps(split_summary, ensure_ascii=False, indent=2))
     print(f"device={device}; parameters={sum(p.numel() for p in model.parameters()):,}")
@@ -850,7 +778,6 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
     criterion = RATCFSRLoss(
         reconstruction_weight=args.reconstruction_weight,
         margin_weight=args.margin_weight,
-        open_weight=args.open_weight,
         margin=args.margin,
     )
 
@@ -860,8 +787,7 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
         "[status] "
         f"unknown={list(args.unknown)}; known={split_summary['known_modulations']}; "
         f"open_set_score={args.open_set_score}; "
-        f"threshold_quantile={args.threshold_quantile}; "
-        f"open_weight={args.open_weight}"
+        f"threshold_quantile={args.threshold_quantile}"
     )
 
     first_batch = next(iter(loaders["train"]))
@@ -873,7 +799,6 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
             "iq": tuple(first_batch["iq"].shape),
             "logits": tuple(dry_outputs["logits"].shape),
             "errors": tuple(dry_outputs["reconstruction_errors"].shape),
-            "open_logits": tuple(dry_outputs["open_logits"].shape),
             "spectrogram": tuple(dry_outputs["spectrogram"].shape),
         },
     )

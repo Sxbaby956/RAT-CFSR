@@ -206,29 +206,8 @@ class BottleneckAutoencoder(nn.Module):
             nn.Tanh(),
         )
 
-    def encode(self, x: torch.Tensor) -> torch.Tensor:
-        return self.encoder(x)
-
-    def decode(self, embedding: torch.Tensor) -> torch.Tensor:
-        return self.decoder(embedding)
-
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        embedding = self.encode(x)
-        return self.decode(embedding), embedding
-
-
-class OpenSetBinaryHead(nn.Module):
-    def __init__(self, bottleneck_dim: int) -> None:
-        super().__init__()
-        hidden_dim = max(16, bottleneck_dim * 2)
-        self.layers = nn.Sequential(
-            nn.Linear(bottleneck_dim, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, 1),
-        )
-
-    def forward(self, embedding: torch.Tensor) -> torch.Tensor:
-        return self.layers(embedding).squeeze(-1)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.decoder(self.encoder(x))
 
 
 class RATCFSR(nn.Module):
@@ -261,9 +240,6 @@ class RATCFSR(nn.Module):
             BottleneckAutoencoder(projection_dim, bottleneck_dim)
             for _ in range(num_classes)
         )
-        self.open_heads = nn.ModuleList(
-            OpenSetBinaryHead(bottleneck_dim) for _ in range(num_classes)
-        )
 
     def forward(self, iq: torch.Tensor) -> dict[str, torch.Tensor]:
         iq_semantic = self.iq_encoder(iq)
@@ -278,22 +254,18 @@ class RATCFSR(nn.Module):
         ae_input = projected
         if self.training and self.ae_noise_std > 0:
             ae_input = ae_input + torch.randn_like(ae_input) * self.ae_noise_std
-        reconstructed_values = []
-        manifold_embeddings = []
-        open_logits = []
-        for class_index, autoencoder in enumerate(self.autoencoders):
-            reconstructed_value, embedding = autoencoder(ae_input[:, class_index])
-            reconstructed_values.append(reconstructed_value)
-            manifold_embeddings.append(embedding)
-            open_logits.append(self.open_heads[class_index](embedding))
-        reconstructed = torch.stack(reconstructed_values, dim=1)
-        manifold = torch.stack(manifold_embeddings, dim=1)
+        reconstructed = torch.stack(
+            [
+                autoencoder(ae_input[:, class_index])
+                for class_index, autoencoder in enumerate(self.autoencoders)
+            ],
+            dim=1,
+        )
         reconstruction_errors = torch.mean(
             torch.abs(projected - reconstructed), dim=2
         )
         return {
             "logits": logits,
-            "open_logits": torch.stack(open_logits, dim=1),
             "reconstruction_errors": reconstruction_errors,
             "fused_semantic": fused,
             "iq_semantic": iq_semantic,
@@ -301,6 +273,5 @@ class RATCFSR(nn.Module):
             "gate_weights": gate_weights,
             "projected": projected,
             "reconstructed": reconstructed,
-            "manifold_embeddings": manifold,
             "spectrogram": spectrogram,
         }

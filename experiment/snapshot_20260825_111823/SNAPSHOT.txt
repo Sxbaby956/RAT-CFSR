@@ -1,0 +1,9 @@
+snapshot: /home/zjut/public/zjm/RAT-CFSR/experiment/snapshot_20260825_111823
+created_at: 2026-08-25T11:18:23
+code_source: git_head: eef41bf; dirty: True
+results_source: /home/zjut/public/zjm/RAT-CFSR/outputs/rml2016_v3
+contents:
+- code/: current project code excluding data, logs, outputs, experiments, and git metadata
+- outputs/rml2016_v3/: current experiment results
+
+note: v3 snapshot; code/ has the open-loss experiment diff reversed, so it matches the enhanced-IQ v3 code used by outputs/rml2016_v3/enhanced_iq_snr0_seed42.

@@ -1,0 +1,7 @@
+snapshot: /home/zjut/public/zjm/RAT-CFSR/experiment/snapshot_20260825_123317
+created_at: 2026-08-25T12:33:17
+code_source: git_head: eef41bf; dirty: True
+results_source: /home/zjut/public/zjm/RAT-CFSR/outputs/rml2016_v5/balanced_open_loss_snr0_seed42
+contents:
+- code/: current project code excluding data, logs, outputs, experiments, and git metadata
+- outputs/balanced_open_loss_snr0_seed42/: current experiment results

@@ -37,13 +37,10 @@ def test_model_forward_and_loss_backward() -> None:
     labels = torch.tensor([0, 1, 0, 1])
     outputs = model(iq)
     assert outputs["logits"].shape == (4, 2)
-    assert outputs["open_logits"].shape == (4, 2)
     assert outputs["reconstruction_errors"].shape == (4, 2)
-    assert outputs["manifold_embeddings"].shape == (4, 2, 4)
     assert outputs["gate_weights"].shape == (4, 2)
     assert torch.allclose(outputs["gate_weights"].sum(dim=1), torch.ones(4))
 
     losses = RATCFSRLoss()(outputs, labels)
-    assert torch.isfinite(losses["open"])
     losses["total"].backward()
     assert torch.isfinite(losses["total"])

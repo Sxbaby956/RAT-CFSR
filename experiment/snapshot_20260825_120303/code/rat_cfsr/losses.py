@@ -10,7 +10,7 @@ class RATCFSRLoss(nn.Module):
         self,
         reconstruction_weight: float = 1.0,
         margin_weight: float = 0.5,
-        open_weight: float = 0.1,
+        open_weight: float = 0.2,
         margin: float = 0.2,
     ) -> None:
         super().__init__()
@@ -38,17 +38,7 @@ class RATCFSRLoss(nn.Module):
         ranking = F.relu(self.margin + positive - negative).mean()
         open_logits = outputs["open_logits"]
         open_targets = F.one_hot(labels, num_classes=open_logits.size(1)).float()
-        positive_weight = torch.full(
-            (open_logits.size(1),),
-            float(open_logits.size(1) - 1),
-            device=open_logits.device,
-            dtype=open_logits.dtype,
-        )
-        open_loss = F.binary_cross_entropy_with_logits(
-            open_logits,
-            open_targets,
-            pos_weight=positive_weight,
-        )
+        open_loss = F.binary_cross_entropy_with_logits(open_logits, open_targets)
 
         if classification_only:
             total = classification
