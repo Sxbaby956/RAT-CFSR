@@ -1,0 +1,7 @@
+snapshot: /home/zjut/public/zjm/RAT-CFSR/experiment/snapshot_20260825_144544
+created_at: 2026-08-25T14:45:44
+code_source: git_head: d3a8f7e; dirty: True
+results_source: /home/zjut/public/zjm/RAT-CFSR/outputs/rml2016_v8/pruned_prototype_snr0_seed42
+contents:
+- code/: current project code excluding data, logs, outputs, experiments, and git metadata
+- outputs/pruned_prototype_snr0_seed42/: current experiment results

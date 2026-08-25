@@ -1,0 +1,10 @@
+GlobecomPOWDER
+S3R/
+tmp/pdfs/
+
+__pycache__/
+*.py[cod]
+*.log
+
+outputs/
+logs/

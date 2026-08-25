@@ -1,0 +1,7 @@
+snapshot: /home/zjut/public/zjm/RAT-CFSR/experiment/snapshot_20260825_135251
+created_at: 2026-08-25T13:52:52
+code_source: git_head: d3a8f7e; dirty: True
+results_source: /home/zjut/public/zjm/RAT-CFSR/outputs/rml2016_v7/gated_constellation_prototype_snr0_seed42
+contents:
+- code/: current project code excluding data, logs, outputs, experiments, and git metadata
+- outputs/gated_constellation_prototype_snr0_seed42/: current experiment results

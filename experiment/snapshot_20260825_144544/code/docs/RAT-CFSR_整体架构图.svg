@@ -1,0 +1,228 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1120" viewBox="0 0 1800 1120">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7fbff"/>
+      <stop offset="1" stop-color="#eef4fb"/>
+    </linearGradient>
+    <linearGradient id="inputGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#173b67"/>
+      <stop offset="1" stop-color="#285d93"/>
+    </linearGradient>
+    <linearGradient id="s3rGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#dff8f3"/>
+      <stop offset="1" stop-color="#c5eee6"/>
+    </linearGradient>
+    <linearGradient id="newGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff3d9"/>
+      <stop offset="1" stop-color="#ffe2a8"/>
+    </linearGradient>
+    <linearGradient id="cfsrGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e7e4fb"/>
+      <stop offset="1" stop-color="#d4cef5"/>
+    </linearGradient>
+    <linearGradient id="decisionGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e8f7e6"/>
+      <stop offset="1" stop-color="#cdecc9"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="5" stdDeviation="6" flood-color="#12304d" flood-opacity="0.15"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#35526e"/>
+    </marker>
+    <marker id="arrowOrange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#d38a17"/>
+    </marker>
+    <style>
+      .title { font: 700 38px 'Microsoft YaHei','Noto Sans CJK SC',sans-serif; fill:#122b45; }
+      .subtitle { font: 400 18px 'Microsoft YaHei','Noto Sans CJK SC',sans-serif; fill:#55708a; }
+      .section { font: 700 22px 'Microsoft YaHei','Noto Sans CJK SC',sans-serif; fill:#17324d; }
+      .boxTitle { font: 700 21px 'Microsoft YaHei','Noto Sans CJK SC',sans-serif; fill:#17324d; }
+      .boxText { font: 400 17px 'Microsoft YaHei','Noto Sans CJK SC',sans-serif; fill:#304b63; }
+      .small { font: 400 15px 'Microsoft YaHei','Noto Sans CJK SC',sans-serif; fill:#49647c; }
+      .tiny { font: 400 13px 'Microsoft YaHei','Noto Sans CJK SC',sans-serif; fill:#536b80; }
+      .badge { font: 700 13px 'Microsoft YaHei','Noto Sans CJK SC',sans-serif; fill:white; }
+      .formula { font: italic 19px 'Times New Roman',serif; fill:#263f58; }
+      .flow { stroke:#35526e; stroke-width:3; fill:none; marker-end:url(#arrow); }
+      .flowDash { stroke:#d38a17; stroke-width:2.5; stroke-dasharray:8 7; fill:none; marker-end:url(#arrowOrange); }
+      .box { stroke-width:2; rx:16; filter:url(#shadow); }
+    </style>
+  </defs>
+
+  <rect width="1800" height="1120" fill="url(#bg)"/>
+  <rect x="24" y="24" width="1752" height="1072" rx="28" fill="none" stroke="#d5e2ee" stroke-width="2"/>
+
+  <text x="900" y="67" text-anchor="middle" class="title">RAT-CFSR 无线信号体制开放集识别整体架构</text>
+  <text x="900" y="98" text-anchor="middle" class="subtitle">融合 S3R 时频语义与 CFSR 类特征空间重构，用于 5G NR / LTE / Wi-Fi 等已知体制分类与未知体制拒识</text>
+
+  <!-- Stage labels -->
+  <text x="140" y="150" text-anchor="middle" class="section">① 信号输入</text>
+  <text x="505" y="150" text-anchor="middle" class="section">② 双视图语义提取</text>
+  <text x="895" y="150" text-anchor="middle" class="section">③ 自适应融合</text>
+  <text x="1235" y="150" text-anchor="middle" class="section">④ 类条件重构</text>
+  <text x="1580" y="150" text-anchor="middle" class="section">⑤ 开放集决策</text>
+
+  <!-- Input -->
+  <rect x="55" y="320" width="190" height="138" rx="18" fill="url(#inputGrad)" stroke="#12375d" class="box"/>
+  <path d="M82 387 C95 360,108 414,121 387 S147 360,160 387 S186 414,218 382" stroke="#a9ddff" stroke-width="4" fill="none"/>
+  <text x="150" y="418" text-anchor="middle" style="font:700 24px 'Microsoft YaHei',sans-serif;fill:white">原始 I/Q 信号</text>
+  <text x="150" y="444" text-anchor="middle" style="font:400 13px 'Microsoft YaHei',sans-serif;fill:#d8edff">切分 · 统一重采样 · 功率归一化</text>
+
+  <!-- Split -->
+  <circle cx="293" cy="389" r="8" fill="#35526e"/>
+  <path d="M245 389 H285" class="flow"/>
+  <path d="M293 389 V249 H350" class="flow"/>
+  <path d="M293 389 V536 H350" class="flow"/>
+
+  <!-- IQ branch -->
+  <rect x="350" y="195" width="310" height="108" rx="16" fill="#e1f0fb" stroke="#5a91bb" class="box"/>
+  <rect x="368" y="211" width="66" height="24" rx="12" fill="#2c74a8"/>
+  <text x="401" y="228" text-anchor="middle" class="badge">CFSR</text>
+  <text x="505" y="257" text-anchor="middle" class="boxTitle">一维 CNN / ResNet</text>
+  <text x="505" y="283" text-anchor="middle" class="boxText">幅相变化 · 调制细节 · 短时结构</text>
+  <rect x="690" y="217" width="108" height="65" rx="14" fill="#ffffff" stroke="#78a6c7" stroke-width="2"/>
+  <text x="744" y="246" text-anchor="middle" class="formula">z<tspan baseline-shift="sub" font-size="14">iq</tspan></text>
+  <text x="744" y="269" text-anchor="middle" class="small">时域语义</text>
+  <path d="M660 249 H690" class="flow"/>
+
+  <!-- TF branch pre-processing -->
+  <rect x="350" y="474" width="168" height="124" rx="16" fill="url(#s3rGrad)" stroke="#45a995" class="box"/>
+  <rect x="366" y="490" width="53" height="24" rx="12" fill="#258b78"/>
+  <text x="392" y="507" text-anchor="middle" class="badge">S3R</text>
+  <text x="434" y="540" text-anchor="middle" class="boxTitle">STFT</text>
+  <text x="434" y="567" text-anchor="middle" class="boxText">对数功率谱</text>
+  <text x="434" y="589" text-anchor="middle" class="small">单样本归一化</text>
+
+  <!-- Multi-scale CNN -->
+  <rect x="552" y="446" width="310" height="180" rx="16" fill="url(#s3rGrad)" stroke="#45a995" class="box"/>
+  <rect x="570" y="462" width="53" height="24" rx="12" fill="#258b78"/>
+  <text x="596" y="479" text-anchor="middle" class="badge">S3R</text>
+  <text x="707" y="493" text-anchor="middle" class="boxTitle">多尺度时频纹理提取器 TE</text>
+  <rect x="580" y="515" width="78" height="48" rx="10" fill="#ffffff" stroke="#56ae9c"/>
+  <rect x="668" y="515" width="78" height="48" rx="10" fill="#ffffff" stroke="#56ae9c"/>
+  <rect x="756" y="515" width="78" height="48" rx="10" fill="#ffffff" stroke="#56ae9c"/>
+  <text x="619" y="544" text-anchor="middle" class="small">膨胀率 1</text>
+  <text x="707" y="544" text-anchor="middle" class="small">膨胀率 3</text>
+  <text x="795" y="544" text-anchor="middle" class="small">膨胀率 5</text>
+  <text x="707" y="591" text-anchor="middle" class="boxText">带宽 · 子载波 · 突发 · 帧纹理</text>
+  <path d="M518 536 H552" class="flow"/>
+  <rect x="890" y="504" width="108" height="65" rx="14" fill="#ffffff" stroke="#56ae9c" stroke-width="2"/>
+  <text x="944" y="533" text-anchor="middle" class="formula">z<tspan baseline-shift="sub" font-size="14">tf</tspan></text>
+  <text x="944" y="556" text-anchor="middle" class="small">时频语义</text>
+  <path d="M862 536 H890" class="flow"/>
+
+  <!-- Gated fusion -->
+  <rect x="820" y="271" width="250" height="140" rx="22" fill="url(#newGrad)" stroke="#df9e2f" class="box"/>
+  <rect x="839" y="288" width="66" height="24" rx="12" fill="#d38a17"/>
+  <text x="872" y="305" text-anchor="middle" class="badge">本文新增</text>
+  <text x="945" y="339" text-anchor="middle" class="boxTitle">自适应门控融合</text>
+  <text x="945" y="370" text-anchor="middle" class="formula">z = LN(g<tspan baseline-shift="sub" font-size="13">iq</tspan>z̃<tspan baseline-shift="sub" font-size="13">iq</tspan> + g<tspan baseline-shift="sub" font-size="13">tf</tspan>z̃<tspan baseline-shift="sub" font-size="13">tf</tspan>)</text>
+  <text x="945" y="397" text-anchor="middle" class="small">线性维度对齐 · 动态权重 · 模态屏蔽</text>
+  <path d="M798 249 H845 Q875 249 875 271" class="flow"/>
+  <path d="M998 536 H1022 Q1045 536 1045 411" class="flow"/>
+
+  <!-- Closed-set auxiliary classifier -->
+  <rect x="820" y="675" width="250" height="100" rx="16" fill="#f3f6f9" stroke="#94a9ba" stroke-width="2"/>
+  <text x="945" y="708" text-anchor="middle" class="boxTitle">已知类辅助分类头</text>
+  <text x="945" y="737" text-anchor="middle" class="formula">L<tspan baseline-shift="sub" font-size="13">ce</tspan></text>
+  <text x="945" y="760" text-anchor="middle" class="small">仅训练；推理由校准重构分数完成</text>
+  <path d="M945 411 V675" class="flowDash"/>
+
+  <!-- Projection and AE group -->
+  <rect x="1110" y="187" width="365" height="482" rx="24" fill="#f7f6ff" stroke="#8b7fc7" stroke-width="2.5" filter="url(#shadow)"/>
+  <rect x="1130" y="207" width="66" height="24" rx="12" fill="#6e60b5"/>
+  <text x="1163" y="224" text-anchor="middle" class="badge">CFSR</text>
+  <text x="1292" y="247" text-anchor="middle" class="boxTitle">K 个已知体制的类特征空间</text>
+  <text x="1292" y="274" text-anchor="middle" class="small">例：5G NR · LTE · Wi-Fi</text>
+
+  <!-- class 1 -->
+  <rect x="1142" y="303" width="95" height="70" rx="13" fill="url(#cfsrGrad)" stroke="#8577c5"/>
+  <text x="1189" y="332" text-anchor="middle" class="boxTitle">p₁</text>
+  <text x="1189" y="357" text-anchor="middle" class="small">类投影</text>
+  <rect x="1260" y="303" width="95" height="70" rx="13" fill="url(#cfsrGrad)" stroke="#8577c5"/>
+  <text x="1307" y="332" text-anchor="middle" class="boxTitle">AE₁</text>
+  <text x="1307" y="357" text-anchor="middle" class="small">64→16→64</text>
+  <rect x="1378" y="310" width="64" height="56" rx="12" fill="#ffffff" stroke="#8577c5"/>
+  <text x="1410" y="344" text-anchor="middle" class="formula">e₁</text>
+  <path d="M1237 338 H1260" class="flow"/>
+  <path d="M1355 338 H1378" class="flow"/>
+
+  <!-- class 2 -->
+  <rect x="1142" y="400" width="95" height="70" rx="13" fill="url(#cfsrGrad)" stroke="#8577c5"/>
+  <text x="1189" y="429" text-anchor="middle" class="boxTitle">p₂</text>
+  <text x="1189" y="454" text-anchor="middle" class="small">类投影</text>
+  <rect x="1260" y="400" width="95" height="70" rx="13" fill="url(#cfsrGrad)" stroke="#8577c5"/>
+  <text x="1307" y="429" text-anchor="middle" class="boxTitle">AE₂</text>
+  <text x="1307" y="454" text-anchor="middle" class="small">64→16→64</text>
+  <rect x="1378" y="407" width="64" height="56" rx="12" fill="#ffffff" stroke="#8577c5"/>
+  <text x="1410" y="441" text-anchor="middle" class="formula">e₂</text>
+  <path d="M1237 435 H1260" class="flow"/>
+  <path d="M1355 435 H1378" class="flow"/>
+
+  <text x="1292" y="508" text-anchor="middle" style="font:700 28px 'Microsoft YaHei',sans-serif;fill:#8175b2">· · ·</text>
+
+  <!-- class K -->
+  <rect x="1142" y="544" width="95" height="70" rx="13" fill="url(#cfsrGrad)" stroke="#8577c5"/>
+  <text x="1189" y="573" text-anchor="middle" class="boxTitle">pₖ</text>
+  <text x="1189" y="598" text-anchor="middle" class="small">类投影</text>
+  <rect x="1260" y="544" width="95" height="70" rx="13" fill="url(#cfsrGrad)" stroke="#8577c5"/>
+  <text x="1307" y="573" text-anchor="middle" class="boxTitle">AEₖ</text>
+  <text x="1307" y="598" text-anchor="middle" class="small">64→16→64</text>
+  <rect x="1378" y="551" width="64" height="56" rx="12" fill="#ffffff" stroke="#8577c5"/>
+  <text x="1410" y="585" text-anchor="middle" class="formula">eₖ</text>
+  <path d="M1237 579 H1260" class="flow"/>
+  <path d="M1355 579 H1378" class="flow"/>
+
+  <!-- Fusion to class branches -->
+  <path d="M1070 341 H1100 Q1125 341 1125 338 H1142" class="flow"/>
+  <path d="M1100 341 V435 H1142" class="flow"/>
+  <path d="M1100 435 V579 H1142" class="flow"/>
+
+  <!-- Decision -->
+  <rect x="1515" y="265" width="230" height="132" rx="18" fill="#ffffff" stroke="#6d8ca7" class="box"/>
+  <text x="1630" y="302" text-anchor="middle" class="boxTitle">类别条件误差校准</text>
+  <text x="1630" y="338" text-anchor="middle" class="formula">s<tspan baseline-shift="sub" font-size="13">k</tspan> = F<tspan baseline-shift="sub" font-size="13">k</tspan>(e<tspan baseline-shift="sub" font-size="13">k</tspan>)</text>
+  <text x="1630" y="373" text-anchor="middle" class="small">k* = arg min sₖ · 独立已知校准集</text>
+  <path d="M1442 435 H1480 Q1495 435 1495 331 H1515" class="flow"/>
+
+  <polygon points="1630,444 1735,516 1630,588 1525,516" fill="url(#newGrad)" stroke="#d79527" stroke-width="2.5" filter="url(#shadow)"/>
+  <text x="1630" y="507" text-anchor="middle" class="boxTitle">校准阈值判定</text>
+  <text x="1630" y="536" text-anchor="middle" class="formula">s<tspan baseline-shift="sub" font-size="13">k*</tspan> ≤ τ<tspan baseline-shift="sub" font-size="13">k*</tspan> ?</text>
+  <path d="M1630 397 V444" class="flow"/>
+
+  <rect x="1498" y="642" width="126" height="80" rx="16" fill="url(#decisionGrad)" stroke="#65a75e" class="box"/>
+  <text x="1561" y="676" text-anchor="middle" class="boxTitle">是</text>
+  <text x="1561" y="704" text-anchor="middle" class="boxText">已知体制 k*</text>
+  <rect x="1650" y="642" width="126" height="80" rx="16" fill="#fde5e5" stroke="#c96a6a" class="box"/>
+  <text x="1713" y="676" text-anchor="middle" class="boxTitle">否</text>
+  <text x="1713" y="704" text-anchor="middle" class="boxText">Unknown</text>
+  <path d="M1585 568 L1561 642" class="flow"/>
+  <path d="M1675 568 L1713 642" class="flow"/>
+
+  <!-- Training objective panel -->
+  <rect x="92" y="825" width="1616" height="182" rx="24" fill="#ffffff" stroke="#c7d7e5" stroke-width="2.5" filter="url(#shadow)"/>
+  <text x="132" y="866" class="section">训练目标</text>
+  <text x="132" y="910" class="formula">L = L<tspan baseline-shift="sub" font-size="14">ce</tspan> + λ₁L<tspan baseline-shift="sub" font-size="14">rec</tspan> + λ₂L<tspan baseline-shift="sub" font-size="14">margin</tspan></text>
+
+  <rect x="505" y="857" width="320" height="105" rx="15" fill="#f1f6fa" stroke="#91aabc"/>
+  <text x="665" y="891" text-anchor="middle" class="boxTitle">L<tspan baseline-shift="sub" font-size="14">ce</tspan>：已知类交叉熵</text>
+  <text x="665" y="922" text-anchor="middle" class="boxText">增强已知体制的闭集判别能力</text>
+  <text x="665" y="947" text-anchor="middle" class="tiny">辅助分类头参与训练，最终拒识仍由重构误差完成</text>
+
+  <rect x="850" y="857" width="320" height="105" rx="15" fill="url(#cfsrGrad)" stroke="#8b7fc7"/>
+  <text x="1010" y="891" text-anchor="middle" class="boxTitle">L<tspan baseline-shift="sub" font-size="14">rec</tspan>：正确类重构</text>
+  <text x="1010" y="922" text-anchor="middle" class="boxText">最小化样本在正确体制支路中的误差</text>
+  <text x="1010" y="947" text-anchor="middle" class="tiny">继承 CFSR 类特征空间重构思想</text>
+
+  <rect x="1195" y="857" width="455" height="105" rx="15" fill="url(#newGrad)" stroke="#df9e2f"/>
+  <text x="1422" y="891" text-anchor="middle" class="boxTitle">L<tspan baseline-shift="sub" font-size="14">margin</tspan>：重构排序约束</text>
+  <text x="1422" y="922" text-anchor="middle" class="formula">max(0, m + e<tspan baseline-shift="sub" font-size="13">y</tspan> − min<tspan baseline-shift="sub" font-size="13">k≠y</tspan> e<tspan baseline-shift="sub" font-size="13">k</tspan>)</text>
+  <text x="1422" y="949" text-anchor="middle" class="tiny">本文新增：扩大正确类与最难错误类之间的误差间隔</text>
+
+  <!-- Legend -->
+  <rect x="90" y="1041" width="1620" height="38" rx="12" fill="#eaf1f7"/>
+  <circle cx="128" cy="1060" r="8" fill="#258b78"/><text x="145" y="1066" class="small">S3R：时频语义</text>
+  <circle cx="335" cy="1060" r="8" fill="#6e60b5"/><text x="352" y="1066" class="small">CFSR：类空间重构</text>
+  <circle cx="590" cy="1060" r="8" fill="#d38a17"/><text x="607" y="1066" class="small">本文新增：门控融合、排序损失与类别校准</text>
+  <text x="1665" y="1066" text-anchor="end" class="tiny">实线：推理数据流　　橙色虚线：训练辅助路径</text>
+</svg>
