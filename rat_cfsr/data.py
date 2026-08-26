@@ -11,11 +11,13 @@ import torch
 from torch.utils.data import Dataset
 
 
-# The 11 modulation types present in RML2016.10a.
+# RML2016.10b's class list == RML2016.10a minus AM-SSB. CFSR's large-data
+# protocol (docs section 3.2) uses 10b, which is not available on disk here, so
+# we align the class pool by dropping AM-SSB. This leaves 10 classes for the
+# known/unknown rotation.
 MODULATIONS = (
     "8PSK",
     "AM-DSB",
-    "AM-SSB",
     "BPSK",
     "CPFSK",
     "GFSK",
@@ -178,23 +180,21 @@ def filter_samples_by_snr(
 
 
 class ModulationDataset(Dataset):
-    """In-memory RML2016.10a windows with optional on-the-fly augmentation."""
+    """In-memory RML2016.10a windows.
+
+    No augmentation: CFSR's protocol (docs sections 3 and 5) trains on the raw
+    labelled windows. Injecting AWGN in particular would re-randomize each
+    sample's effective SNR, which invalidates the per-SNR AUROC/OSCR analysis
+    the paper is built around.
+    """
 
     def __init__(
         self,
         data: np.ndarray,
         samples: Sequence[Sample],
-        augment: bool = False,
-        frequency_shift_max: float = 0.02,
-        awgn_probability: float = 0.5,
-        awgn_snr_db: tuple[float, float] = (15.0, 35.0),
     ) -> None:
         self.data = np.asarray(data, dtype=np.float32)
         self.samples = list(samples)
-        self.augment = bool(augment)
-        self.frequency_shift_max = float(frequency_shift_max)
-        self.awgn_probability = float(awgn_probability)
-        self.awgn_snr_db = awgn_snr_db
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -215,33 +215,9 @@ class ModulationDataset(Dataset):
         rms = math.sqrt(float(np.mean(np.abs(complex_iq) ** 2)))
         return complex_iq / max(rms, 1e-8)
 
-    def _augment(self, complex_iq: np.ndarray) -> np.ndarray:
-        phase = np.random.uniform(-math.pi, math.pi)
-        complex_iq = complex_iq * np.exp(1j * phase)
-
-        max_shift = self.frequency_shift_max
-        if max_shift > 0:
-            normalized_shift = np.random.uniform(-max_shift, max_shift)
-            sample_index = np.arange(complex_iq.size, dtype=np.float32)
-            complex_iq = complex_iq * np.exp(2j * math.pi * normalized_shift * sample_index)
-
-        if np.random.random() < self.awgn_probability:
-            snr_db = np.random.uniform(*self.awgn_snr_db)
-            noise_power = 10.0 ** (-snr_db / 10.0)
-            noise = (
-                np.random.normal(size=complex_iq.size) + 1j * np.random.normal(size=complex_iq.size)
-            ) * math.sqrt(noise_power / 2.0)
-            complex_iq = complex_iq + noise
-        return complex_iq
-
     def __getitem__(self, index: int) -> dict[str, object]:
         sample = self.samples[index]
-        complex_iq = self._to_complex(self.data[sample.index])
-        complex_iq = self._normalize(complex_iq)
-        if self.augment:
-            complex_iq = self._augment(complex_iq)
-            complex_iq = self._normalize(complex_iq)
-
+        complex_iq = self._normalize(self._to_complex(self.data[sample.index]))
         tensor = torch.from_numpy(self._from_complex(complex_iq))
         return {
             "iq": tensor,

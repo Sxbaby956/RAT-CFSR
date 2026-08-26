@@ -73,7 +73,7 @@ def test_modulation_dataset_normalizes_and_returns_2x128() -> None:
     ] + [
         _make_sample("QPSK", 0, index, 1) for index in range(8)
     ]
-    dataset = ModulationDataset(data, samples, augment=False)
+    dataset = ModulationDataset(data, samples)
     item = dataset[0]
     assert item["iq"].shape == (2, 128)
     assert item["label"].item() == 0

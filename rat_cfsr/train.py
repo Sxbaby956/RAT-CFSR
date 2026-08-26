@@ -41,7 +41,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--unknown",
         nargs="+",
         choices=MODULATIONS,
-        default=["AM-DSB", "AM-SSB", "WBFM"],
+        default=["AM-DSB", "WBFM"],
         help="Modulation type(s) held out as unknown (out-of-distribution).",
     )
     parser.add_argument("--num-iq-samples", type=int, default=128)
@@ -59,12 +59,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--workers", type=int, default=0)
-    parser.add_argument("--stage1-epochs", type=int, default=30)
-    parser.add_argument("--stage2-epochs", type=int, default=40)
+    parser.add_argument("--stage1-epochs", type=int, default=0)
+    parser.add_argument("--stage2-epochs", type=int, default=50)
     parser.add_argument(
         "--early-stop-patience",
         type=int,
-        default=5,
+        default=0,
         help="Stop a stage after this many epochs without validation improvement; 0 disables.",
     )
     parser.add_argument(
@@ -79,26 +79,27 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="val_acc",
         help="Validation metric monitored by early stopping.",
     )
-    parser.add_argument("--stage1-lr", type=float, default=3e-4)
-    parser.add_argument("--backbone-lr", type=float, default=3e-5)
-    parser.add_argument("--class-module-lr", type=float, default=1e-4)
+    parser.add_argument("--stage1-lr", type=float, default=3e-3)
+    parser.add_argument("--backbone-lr", type=float, default=3e-3)
+    parser.add_argument("--class-module-lr", type=float, default=3e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--semantic-dim", type=int, default=128)
     parser.add_argument("--projection-dim", type=int, default=64)
     parser.add_argument("--bottleneck-dim", type=int, default=16)
-    parser.add_argument("--n-fft", type=int, default=64)
-    parser.add_argument("--hop-length", type=int, default=32)
-    parser.add_argument("--modality-dropout", type=float, default=0.1)
-    parser.add_argument("--ae-noise-std", type=float, default=0.01)
+    parser.add_argument("--ae-noise-std", type=float, default=0.0)
     parser.add_argument("--reconstruction-weight", type=float, default=1.0)
-    parser.add_argument("--margin-weight", type=float, default=0.2)
+    parser.add_argument(
+        "--reconstruction-temperature",
+        type=float,
+        default=12.8,
+        help="Softmax temperature for the reconstruction classification loss.",
+    )
     parser.add_argument(
         "--open-weight",
         type=float,
         default=0.1,
         help="Weight for the balanced CFSR one-vs-rest pseudo-unknown binary loss.",
     )
-    parser.add_argument("--margin", type=float, default=0.2)
     parser.add_argument("--threshold-quantile", type=float, default=0.90)
     parser.add_argument(
         "--open-set-score",
@@ -110,7 +111,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "reconstruction",
             "open_head",
         ),
-        default="prototype",
+        default="reconstruction",
         help="Unknown score used for final rejection. Larger scores mean more unknown.",
     )
     parser.add_argument("--energy-temperature", type=float, default=1.0)
@@ -133,6 +134,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Deprecated; use --log-interval for text log frequency.",
     )
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--folds",
+        type=int,
+        default=1,
+        help="Number of known/unknown rotation folds. >1 overrides --unknown.",
+    )
+    parser.add_argument(
+        "--fold",
+        type=int,
+        default=0,
+        help="Fold index to run when --folds > 1.",
+    )
     parser.add_argument("--device", default="auto", help="auto, cpu, cuda, or cuda:0")
     parser.add_argument(
         "--dry-run",
@@ -165,8 +178,27 @@ def select_device(requested: str) -> torch.device:
     return device
 
 
+def compute_unknown_for_fold(fold: int, num_folds: int, classes: tuple[str, ...]) -> list[str]:
+    """Rotate the held-out classes across folds (docs section 3.3, step 5).
+
+    Contiguous blocks of ``len(classes)//num_folds`` classes are held out, so
+    every class appears as unknown exactly once across a full rotation.
+    """
+    if not 0 <= fold < num_folds:
+        raise ValueError(f"fold must be in [0, {num_folds})")
+    per_fold = len(classes) // num_folds
+    if per_fold < 1:
+        raise ValueError("num_folds cannot exceed the number of classes")
+    start = fold * per_fold
+    return list(classes[start : start + per_fold])
+
+
 def make_loaders(args: argparse.Namespace) -> tuple[dict[str, DataLoader], dict]:
-    unknown_modulations = list(args.unknown)
+    unknown_modulations = (
+        compute_unknown_for_fold(args.fold, args.folds, MODULATIONS)
+        if args.folds > 1
+        else list(args.unknown)
+    )
     known_modulations = [m for m in MODULATIONS if m not in set(unknown_modulations)]
     label_map = {m: index for index, m in enumerate(known_modulations)}
     data, samples = load_samples(args.data_root, label_map)
@@ -175,11 +207,7 @@ def make_loaders(args: argparse.Namespace) -> tuple[dict[str, DataLoader], dict]
 
     datasets: dict[str, ModulationDataset] = {}
     for split_name, split_values in sample_splits.items():
-        datasets[split_name] = ModulationDataset(
-            data,
-            split_values,
-            augment=split_name == "train",
-        )
+        datasets[split_name] = ModulationDataset(data, split_values)
 
     pin_memory = torch.cuda.is_available()
     loaders = {
@@ -244,16 +272,11 @@ def make_loaders(args: argparse.Namespace) -> tuple[dict[str, DataLoader], dict]
 
 
 def make_model(args: argparse.Namespace, num_classes: int) -> RATCFSR:
-    if args.n_fft > args.num_iq_samples:
-        raise ValueError("n_fft cannot exceed num_iq_samples")
     return RATCFSR(
         num_classes=num_classes,
         semantic_dim=args.semantic_dim,
         projection_dim=args.projection_dim,
         bottleneck_dim=args.bottleneck_dim,
-        n_fft=args.n_fft,
-        hop_length=args.hop_length,
-        modality_dropout=args.modality_dropout,
         ae_noise_std=args.ae_noise_std,
     )
 
@@ -361,15 +384,15 @@ def closed_set_accuracy(
     model.eval()
     correct = 0
     total = 0
-    gate_sum = torch.zeros(2, device=device)
+    feature_norm_sum = 0.0
     for batch in loader:
         iq, labels = _move_batch(batch, device)
         outputs = model(iq)
         predictions = outputs["logits"].argmax(dim=1)
         correct += int((predictions == labels).sum())
         total += labels.numel()
-        gate_sum += outputs["gate_weights"].sum(dim=0)
-    return correct / max(total, 1), (gate_sum / max(total, 1)).cpu().numpy()
+        feature_norm_sum += float(outputs["semantic"].norm(dim=1).sum())
+    return correct / max(total, 1), np.asarray([feature_norm_sum / max(total, 1)])
 
 
 @torch.no_grad()
@@ -399,7 +422,7 @@ def collect_outputs(
         all_labels.append(labels.cpu().numpy())
         all_logits.append(outputs["logits"].cpu().numpy())
         all_open_logits.append(outputs["open_logits"].cpu().numpy())
-        all_features.append(outputs["fused_semantic"].cpu().numpy())
+        all_features.append(outputs["semantic"].cpu().numpy())
         all_snrs.append(np.asarray(batch["snr"], dtype=np.int64))
         all_modulations.append(np.asarray(batch["modulation"], dtype=str))
     return (
@@ -507,16 +530,18 @@ def calibrate_and_predict(
     calibration_logits: np.ndarray,
     calibration_open_logits: np.ndarray,
     calibration_features: np.ndarray,
+    calibration_snrs: np.ndarray,
     test_errors: np.ndarray,
     test_logits: np.ndarray,
     test_open_logits: np.ndarray,
     test_features: np.ndarray,
+    test_snrs: np.ndarray,
 ) -> tuple[object, object, np.ndarray]:
     if args.open_set_score == "reconstruction":
-        calibrator = ClassConditionalCalibrator(args.threshold_quantile).fit(
-            calibration_errors, calibration_labels
+        calibrator = ClassConditionalCalibrator(args.threshold_quantile).fit_snr(
+            calibration_errors, calibration_labels, calibration_snrs
         )
-        predictions = calibrator.predict(test_errors)
+        predictions = calibrator.predict_snr(test_errors, test_snrs)
         test_unknown_scores = predictions.candidate_scores
         return calibrator, predictions, test_unknown_scores
 
@@ -586,11 +611,9 @@ def save_checkpoint(
             "semantic_dim": args.semantic_dim,
             "projection_dim": args.projection_dim,
             "bottleneck_dim": args.bottleneck_dim,
-            "n_fft": args.n_fft,
-            "hop_length": args.hop_length,
-            "modality_dropout": args.modality_dropout,
             "ae_noise_std": args.ae_noise_std,
             "open_weight": args.open_weight,
+            "reconstruction_temperature": args.reconstruction_temperature,
             "open_set_score": args.open_set_score,
             "energy_temperature": args.energy_temperature,
             "early_stop_patience": args.early_stop_patience,
@@ -785,7 +808,7 @@ def evaluate_model(
         calibration_logits,
         calibration_open_logits,
         calibration_features,
-        _calibration_snrs,
+        calibration_snrs,
         _calibration_modulations,
     ) = collect_outputs(model, loaders["calibration"], device)
     print("[status] Fitting open-set calibrator")
@@ -806,10 +829,12 @@ def evaluate_model(
         calibration_logits=calibration_logits,
         calibration_open_logits=calibration_open_logits,
         calibration_features=calibration_features,
+        calibration_snrs=calibration_snrs,
         test_errors=test_errors,
         test_logits=test_logits,
         test_open_logits=test_open_logits,
         test_features=test_features,
+        test_snrs=test_snrs,
     )
     print("[status] Evaluating open-set metrics")
     metrics = evaluate_open_set(
@@ -860,7 +885,7 @@ def evaluate_model(
         reconstruction_errors=test_errors,
         logits=test_logits,
         open_logits=test_open_logits,
-        fused_features=test_features,
+        features=test_features,
         snrs=test_snrs,
         modulations=test_modulations,
         open_set_score=np.asarray(args.open_set_score),
@@ -917,18 +942,9 @@ def run_test_only(args: argparse.Namespace) -> dict[str, object]:
         semantic_dim=int(model_config["semantic_dim"]),
         projection_dim=int(model_config["projection_dim"]),
         bottleneck_dim=int(model_config["bottleneck_dim"]),
-        n_fft=int(model_config["n_fft"]),
-        hop_length=int(model_config["hop_length"]),
-        modality_dropout=float(model_config["modality_dropout"]),
         ae_noise_std=float(model_config["ae_noise_std"]),
     ).to(device)
-    missing, unexpected = model.load_state_dict(checkpoint["model_state"], strict=False)
-    if missing or unexpected:
-        print(
-            "[status] "
-            f"checkpoint loaded with missing={len(missing)} unexpected={len(unexpected)} "
-            "(architecture-compatible non-strict load)"
-        )
+    model.load_state_dict(checkpoint["model_state"], strict=True)
 
     print(json.dumps(split_summary, ensure_ascii=False, indent=2))
     print(f"device={device}; parameters={sum(p.numel() for p in model.parameters()):,}")
@@ -960,16 +976,15 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
     model = make_model(args, num_classes).to(device)
     criterion = RATCFSRLoss(
         reconstruction_weight=args.reconstruction_weight,
-        margin_weight=args.margin_weight,
         open_weight=args.open_weight,
-        margin=args.margin,
+        reconstruction_temperature=args.reconstruction_temperature,
     )
 
     print(json.dumps(split_summary, ensure_ascii=False, indent=2))
     print(f"device={device}; parameters={sum(p.numel() for p in model.parameters()):,}")
     print(
         "[status] "
-        f"unknown={list(args.unknown)}; known={split_summary['known_modulations']}; "
+        f"unknown={split_summary['unknown_modulations']}; known={split_summary['known_modulations']}; "
         f"open_set_score={args.open_set_score}; "
         f"threshold_quantile={args.threshold_quantile}; "
         f"open_weight={args.open_weight}"
@@ -984,8 +999,8 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
             "iq": tuple(first_batch["iq"].shape),
             "logits": tuple(dry_outputs["logits"].shape),
             "errors": tuple(dry_outputs["reconstruction_errors"].shape),
+            "error_matrix": tuple(dry_outputs["reconstruction_error_matrix"].shape),
             "open_logits": tuple(dry_outputs["open_logits"].shape),
-            "spectrogram": tuple(dry_outputs["spectrogram"].shape),
         },
     )
     if args.dry_run:
@@ -1029,7 +1044,7 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
             device,
             classification_only=True,
         )
-        calibration_accuracy, gate_mean = closed_set_accuracy(
+        calibration_accuracy, feature_norm = closed_set_accuracy(
             model, loaders["calibration"], device
         )
         stage1_scheduler.step()
@@ -1041,7 +1056,7 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
             "train_loss": train_losses["train_loss"],
             "val_loss": val_losses["val_loss"],
             "calibration_accuracy": calibration_accuracy,
-            "gate_mean": gate_mean,
+            "feature_norm": feature_norm,
             "seconds": time.time() - started,
         }
         history.append(row)
@@ -1051,9 +1066,15 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
             f"train_loss={train_losses['train_loss']:.4f} "
             f"val_loss={val_losses['val_loss']:.4f} "
             f"val_acc={calibration_accuracy:.4f} "
-            f"gate={np.round(gate_mean, 4).tolist()} "
+            f"feature_norm={np.round(feature_norm, 4).tolist()} "
             f"seconds={row['seconds']:.1f}"
         )
+        if args.early_stop_patience == 0:
+            best_stage1_score = _early_stop_score(row, args.early_stop_metric)
+            best_stage1_epoch = epoch
+            best_stage1_row = row
+            best_state = copy.deepcopy(model.state_dict())
+            continue
         score = _early_stop_score(row, args.early_stop_metric)
         if _is_improved(score, best_stage1_score, args.early_stop_min_delta):
             best_stage1_score = score
@@ -1087,9 +1108,6 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
         print("[status] Stage 1 done: restored best warmup checkpoint")
 
     backbone_parameters = list(model.iq_encoder.parameters())
-    backbone_parameters += list(model.tf_encoder.parameters())
-    backbone_parameters += list(model.fusion.parameters())
-    backbone_parameters += list(model.classifier.parameters())
     class_parameters = (
         list(model.projectors.parameters())
         + list(model.autoencoders.parameters())
@@ -1110,7 +1128,7 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
     best_stage2_row: dict[str, object] | None = None
     stage2_bad_epochs = 0
     best_stage2_state = copy.deepcopy(model.state_dict())
-    print("[status] Stage 2 start: reconstruction/margin fine-tuning")
+    print("[status] Stage 2 start: CFSR reconstruction + open-set training")
     for epoch in range(1, args.stage2_epochs + 1):
         started = time.time()
         train_losses = train_epoch(
@@ -1132,7 +1150,7 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
             device,
             classification_only=False,
         )
-        calibration_accuracy, gate_mean = closed_set_accuracy(
+        calibration_accuracy, feature_norm = closed_set_accuracy(
             model, loaders["calibration"], device
         )
         stage2_scheduler.step()
@@ -1144,7 +1162,7 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
             "train_loss": train_losses["train_loss"],
             "val_loss": val_losses["val_loss"],
             "calibration_accuracy": calibration_accuracy,
-            "gate_mean": gate_mean,
+            "feature_norm": feature_norm,
             "seconds": time.time() - started,
         }
         history.append(row)
@@ -1154,9 +1172,15 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
             f"train_loss={train_losses['train_loss']:.4f} "
             f"val_loss={val_losses['val_loss']:.4f} "
             f"val_acc={calibration_accuracy:.4f} "
-            f"gate={np.round(gate_mean, 4).tolist()} "
+            f"feature_norm={np.round(feature_norm, 4).tolist()} "
             f"seconds={row['seconds']:.1f}"
         )
+        if args.early_stop_patience == 0:
+            best_stage2_score = _early_stop_score(row, args.early_stop_metric)
+            best_stage2_epoch = epoch
+            best_stage2_row = row
+            best_stage2_state = copy.deepcopy(model.state_dict())
+            continue
         score = _early_stop_score(row, args.early_stop_metric)
         if _is_improved(score, best_stage2_score, args.early_stop_min_delta):
             best_stage2_score = score

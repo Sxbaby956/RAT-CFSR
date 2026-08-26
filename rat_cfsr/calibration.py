@@ -16,11 +16,14 @@ class CalibrationPrediction:
 
 
 class ClassConditionalCalibrator:
-    """Empirical-CDF calibration for per-class reconstruction errors.
+    """CFSR-style class-conditional thresholds for reconstruction errors.
 
-    Each class-specific AE has its own error scale. Converting an error to its
-    rank within that class's matching calibration distribution makes scores
-    comparable across class branches. Lower scores are more class-compatible.
+    Reconstruction error is not comparable across SNR levels: at -20 dB every
+    class reconstructs poorly, so a single per-class threshold fitted over the
+    full SNR sweep is dominated by noisy samples and rejects nothing at high
+    SNR. CFSR's protocol reports AUROC/OSCR *per SNR*, so the matching-branch
+    thresholds are fitted per (class, SNR) group. See docs section 6.1 plus the
+    per-SNR evaluation of section 7.1.
     """
 
     def __init__(self, threshold_quantile: float = 0.95) -> None:
@@ -29,6 +32,8 @@ class ClassConditionalCalibrator:
         self.threshold_quantile = float(threshold_quantile)
         self.sorted_errors: list[np.ndarray] = []
         self.thresholds: np.ndarray | None = None
+        # Per-(class, snr) thresholds used by predict_snr. Keys are int snr.
+        self.snr_thresholds: dict[tuple[int, int], float] = {}
 
     @property
     def fitted(self) -> bool:
@@ -49,17 +54,39 @@ class ClassConditionalCalibrator:
                     f"Class {class_index} needs at least two calibration samples"
                 )
             self.sorted_errors.append(matching)
-            matching_scores = self._cdf(matching, matching)
-            thresholds.append(
-                float(np.quantile(matching_scores, self.threshold_quantile))
-            )
+            thresholds.append(float(np.quantile(matching, self.threshold_quantile)))
         self.thresholds = np.asarray(thresholds, dtype=np.float64)
+        self.snr_thresholds = {}
         return self
 
-    @staticmethod
-    def _cdf(reference: np.ndarray, values: np.ndarray) -> np.ndarray:
-        ranks = np.searchsorted(reference, values, side="right")
-        return ranks.astype(np.float64) / float(reference.size)
+    def fit_snr(
+        self, errors: np.ndarray, labels: np.ndarray, snrs: np.ndarray
+    ) -> "ClassConditionalCalibrator":
+        """Fit one threshold per (class, SNR) group.
+
+        Also fills the flat ``thresholds`` array from the pooled per-class
+        errors as a fallback for the (impossible for known classes) case where a
+        test SNR was never observed during calibration.
+        """
+        self.fit(errors, labels)
+        errors = np.asarray(errors, dtype=np.float64)
+        labels = np.asarray(labels, dtype=np.int64)
+        snrs = np.asarray(snrs, dtype=np.int64)
+        if labels.shape != (errors.shape[0],) or snrs.shape != labels.shape:
+            raise ValueError("Expected aligned errors [N,K], labels [N], snrs [N]")
+
+        self.snr_thresholds = {}
+        for class_index in range(errors.shape[1]):
+            class_mask = labels == class_index
+            for snr in np.unique(snrs[class_mask]):
+                matching = errors[class_mask & (snrs == snr), class_index]
+                if matching.size < 2:
+                    continue
+                key = (int(class_index), int(snr))
+                self.snr_thresholds[key] = float(
+                    np.quantile(matching, self.threshold_quantile)
+                )
+        return self
 
     def transform(self, errors: np.ndarray) -> np.ndarray:
         if not self.fitted:
@@ -67,17 +94,14 @@ class ClassConditionalCalibrator:
         errors = np.asarray(errors, dtype=np.float64)
         if errors.ndim != 2 or errors.shape[1] != len(self.sorted_errors):
             raise ValueError("Error matrix has the wrong number of classes")
-        scores = np.empty_like(errors, dtype=np.float64)
-        for class_index, reference in enumerate(self.sorted_errors):
-            scores[:, class_index] = self._cdf(reference, errors[:, class_index])
-        return scores
+        return errors
 
-    def predict(self, errors: np.ndarray) -> CalibrationPrediction:
-        scores = self.transform(errors)
+    def _predict(
+        self, scores: np.ndarray, candidate_thresholds: np.ndarray
+    ) -> CalibrationPrediction:
         candidates = np.argmin(scores, axis=1)
         candidate_scores = scores[np.arange(scores.shape[0]), candidates]
-        assert self.thresholds is not None
-        accepted = candidate_scores <= self.thresholds[candidates]
+        accepted = candidate_scores <= candidate_thresholds
         labels = np.where(accepted, candidates, -1)
         return CalibrationPrediction(
             labels=labels.astype(np.int64),
@@ -85,6 +109,30 @@ class ClassConditionalCalibrator:
             candidate_scores=candidate_scores,
             class_scores=scores,
         )
+
+    def predict(self, errors: np.ndarray) -> CalibrationPrediction:
+        scores = self.transform(errors)
+        assert self.thresholds is not None
+        candidates = np.argmin(scores, axis=1)
+        return self._predict(scores, self.thresholds[candidates])
+
+    def predict_snr(
+        self, errors: np.ndarray, snrs: np.ndarray
+    ) -> CalibrationPrediction:
+        """Predict using per-(class, SNR) thresholds when available."""
+        scores = self.transform(errors)
+        snrs = np.asarray(snrs, dtype=np.int64)
+        if snrs.shape != (scores.shape[0],):
+            raise ValueError("Expected snrs [N] aligned with errors [N]")
+        assert self.thresholds is not None
+        candidates = np.argmin(scores, axis=1)
+        candidate_thresholds = np.empty(scores.shape[0], dtype=np.float64)
+        for index, (candidate, snr) in enumerate(zip(candidates, snrs)):
+            key = (int(candidate), int(snr))
+            candidate_thresholds[index] = self.snr_thresholds.get(
+                key, float(self.thresholds[candidate])
+            )
+        return self._predict(scores, candidate_thresholds)
 
     def to_dict(self) -> dict[str, object]:
         if not self.fitted:
@@ -94,6 +142,9 @@ class ClassConditionalCalibrator:
             "threshold_quantile": self.threshold_quantile,
             "thresholds": self.thresholds.tolist(),
             "sorted_errors": [values.tolist() for values in self.sorted_errors],
+            "snr_thresholds": {
+                f"{cls}:{snr}": value for (cls, snr), value in self.snr_thresholds.items()
+            },
         }
 
     @classmethod
@@ -103,6 +154,10 @@ class ClassConditionalCalibrator:
         calibrator.sorted_errors = [
             np.asarray(values, dtype=np.float64) for values in payload["sorted_errors"]
         ]
+        calibrator.snr_thresholds = {
+            tuple(int(part) for part in key.split(":")): float(value)
+            for key, value in payload.get("snr_thresholds", {}).items()
+        }
         return calibrator
 
     def save(self, path: str | Path) -> None:
