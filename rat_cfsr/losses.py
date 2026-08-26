@@ -10,11 +10,13 @@ class RATCFSRLoss(nn.Module):
         self,
         reconstruction_weight: float = 1.0,
         open_weight: float = 0.1,
+        classification_weight: float = 0.0,
         reconstruction_temperature: float = 12.8,
     ) -> None:
         super().__init__()
         self.reconstruction_weight = reconstruction_weight
         self.open_weight = open_weight
+        self.classification_weight = classification_weight
         self.reconstruction_temperature = reconstruction_temperature
 
     def forward(
@@ -37,6 +39,14 @@ class RATCFSRLoss(nn.Module):
             )
         reconstruction = torch.stack(reconstruction_terms).mean()
 
+        # Inference classifies with the diagonal reconstruction errors.  The
+        # original column-wise CFSR objective above does not directly compare
+        # those diagonal entries, so optimize the deployed decision rule too.
+        classification = F.cross_entropy(
+            outputs["logits"] / self.reconstruction_temperature,
+            labels,
+        )
+
         open_logits = outputs["open_logits"]
         open_targets = F.one_hot(labels, num_classes=open_logits.size(1)).float()
         # CFSR section 5.3 accumulates plain binary cross-entropy over all class
@@ -44,9 +54,13 @@ class RATCFSRLoss(nn.Module):
         open_loss = F.binary_cross_entropy_with_logits(open_logits, open_targets)
 
         if classification_only:
-            total = reconstruction
+            total = classification
         else:
-            total = self.reconstruction_weight * reconstruction + self.open_weight * open_loss
+            total = (
+                self.reconstruction_weight * reconstruction
+                + self.open_weight * open_loss
+                + self.classification_weight * classification
+            )
 
         diagonal_errors = outputs["reconstruction_errors"]
         batch_index = torch.arange(labels.size(0), device=labels.device)
@@ -55,6 +69,7 @@ class RATCFSRLoss(nn.Module):
         negative = diagonal_errors.masked_fill(negative_mask, torch.inf).min(dim=1).values
         return {
             "total": total,
+            "classification": classification,
             "reconstruction": reconstruction,
             "open": open_loss,
             "positive_error": positive.mean(),

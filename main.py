@@ -9,11 +9,13 @@ from rat_cfsr.snapshot import copy_current_snapshot
 from rat_cfsr.train import build_arg_parser, run, run_test_only
 
 DEFAULT_SEEDS = (42,)
-DEFAULT_OUTPUT_DIR = Path("outputs/cfsr_v18_q98")
+DEFAULT_OUTPUT_DIR = Path("outputs/cfsr_v19_direct_ce_q99")
 DEFAULT_FOLDS = 1
 DEFAULT_EARLY_STOP_PATIENCE = 8
 DEFAULT_OPEN_WEIGHT = 0.5
-DEFAULT_THRESHOLD_QUANTILE = 0.98
+DEFAULT_CLASSIFICATION_WEIGHT = 1.0
+DEFAULT_THRESHOLD_QUANTILE = 0.99
+DEFAULT_STAGE1_EPOCHS = 10
 DEFAULT_STAGE2_EPOCHS = 50
 # v10+: align training/calibration with the judged region (SNR>=0). The full-SNR
 # AUROC/OSCR-vs-SNR curves remain available as an optional `--min-snr None` run.
@@ -28,7 +30,9 @@ def parse_args():
         folds=DEFAULT_FOLDS,
         early_stop_patience=DEFAULT_EARLY_STOP_PATIENCE,
         open_weight=DEFAULT_OPEN_WEIGHT,
+        classification_weight=DEFAULT_CLASSIFICATION_WEIGHT,
         threshold_quantile=DEFAULT_THRESHOLD_QUANTILE,
+        stage1_epochs=DEFAULT_STAGE1_EPOCHS,
         stage2_epochs=DEFAULT_STAGE2_EPOCHS,
     )
     mode = parser.add_mutually_exclusive_group()

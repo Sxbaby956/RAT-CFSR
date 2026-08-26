@@ -89,6 +89,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ae-noise-std", type=float, default=0.0)
     parser.add_argument("--reconstruction-weight", type=float, default=1.0)
     parser.add_argument(
+        "--classification-weight",
+        type=float,
+        default=0.0,
+        help="Weight for CE on the diagonal reconstruction logits used at inference.",
+    )
+    parser.add_argument(
         "--reconstruction-temperature",
         type=float,
         default=12.8,
@@ -612,6 +618,7 @@ def save_checkpoint(
             "projection_dim": args.projection_dim,
             "bottleneck_dim": args.bottleneck_dim,
             "ae_noise_std": args.ae_noise_std,
+            "classification_weight": args.classification_weight,
             "open_weight": args.open_weight,
             "reconstruction_temperature": args.reconstruction_temperature,
             "open_set_score": args.open_set_score,
@@ -977,6 +984,7 @@ def run(args: argparse.Namespace, evaluate_after_training: bool = True) -> dict[
     criterion = RATCFSRLoss(
         reconstruction_weight=args.reconstruction_weight,
         open_weight=args.open_weight,
+        classification_weight=args.classification_weight,
         reconstruction_temperature=args.reconstruction_temperature,
     )
 

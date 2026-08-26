@@ -66,10 +66,30 @@ def test_model_forward_and_loss_backward() -> None:
     assert outputs["manifold_embeddings"].shape == (4, 2, 4)
     assert outputs["semantic"].shape == (4, 32)
 
-    losses = RATCFSRLoss()(outputs, labels)
+    losses = RATCFSRLoss(classification_weight=1.0)(outputs, labels)
+    expected_classification = torch.nn.functional.cross_entropy(
+        outputs["logits"] / 12.8,
+        labels,
+    )
+    assert torch.allclose(losses["classification"], expected_classification)
     assert torch.isfinite(losses["open"])
     losses["total"].backward()
     assert torch.isfinite(losses["total"])
+
+
+def test_classification_warmup_optimizes_the_deployed_logits() -> None:
+    torch.manual_seed(11)
+    model = RATCFSR(
+        num_classes=3,
+        semantic_dim=16,
+        projection_dim=8,
+        bottleneck_dim=4,
+    )
+    labels = torch.tensor([0, 1, 2])
+    outputs = model(torch.randn(3, 2, 128))
+    losses = RATCFSRLoss()(outputs, labels, classification_only=True)
+
+    assert torch.allclose(losses["total"], losses["classification"])
 
 
 def test_open_head_unknown_score_uses_candidate_known_logit() -> None:
